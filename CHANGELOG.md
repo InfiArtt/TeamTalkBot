@@ -9,11 +9,14 @@ The format is based on [Semantic Versioning](https://semver.org/).
 - Interactive badword management commands (`/bwl`, `/bwa`, `/bwd`) with persistent storage.
 - Auto-deletion workflow for inactive user channels, including in-channel warnings and owner presence detection.
 - `/v` command to report bot build info, OS details, and TeamTalk SDK version (with admin-only diagnostics).
+- JSON-based configuration loader (`config.json`) with automatic first-run generation and instructions.
+- HTML (`docs/index.html`) and Markdown (`README.md`) documentation detailing all features, config keys, and maintenance rules.
 
 ### Changed
 - Channel creation and registration wizards now emit single consolidated success PMs with TTL info when applicable.
 - Codebase refactored to ensure PEP 8 compliance, UTF-8 encoding, and consistent docstrings across modules.
 - Version reporting logic centralized in `version.py`.
+- TeamTalk SDK license is now configured solely via `config.json` (`TEAMTALK_LICENSE_NAME` / `TEAMTALK_LICENSE_KEY`), removing hardcoded or environment fallback logic.
 
 ## [0.9.0] - 2025-07-20
 ### Added
