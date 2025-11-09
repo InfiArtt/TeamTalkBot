@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>TeamTalk Bot Documentation</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.6; margin: 2rem; color: #222; }
+    h1, h2, h3 { color: #0b5394; }
+    code { background: #f4f4f4; padding: 0.1rem 0.3rem; border-radius: 4px; }
+    pre { background: #f9f9f9; padding: 1rem; border-left: 4px solid #0b5394; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+    th, td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; }
+    th { background: #f0f6ff; }
+    .note { background: #fffae6; border-left: 4px solid #f1c40f; padding: 0.75rem; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+  <h1>TeamTalk Bot Documentation</h1>
+  <p>
+    This bot automates administrative workflows for a TeamTalk 5 server. It provides channel
+    creation wizards, user registration sessions, moderation tools, abuse tracking, badword
+    enforcement, and maintenance utilities such as auto-cleaning inactive channels.
+  </p>
+
+  <h2>Quick Start</h2>
+  <ol>
+    <li>Install Python 3.12+ on the host where the TeamTalk server is reachable.</li>
+    <li>Place <code>libTeamTalk5.so</code> (Linux/WSL) or <code>TeamTalk5.dll</code> (Windows) inside <code>TeamTalk_DLL/</code>.</li>
+    <li>Run the bot once; it will create <code>config.json</code> populated with defaults.</li>
+    <li>Edit <code>config.json</code> to provide server credentials, channel defaults, and policies.</li>
+    <li>Run the bot: <pre>python3 main.py</pre></li>
+    <li>Monitor output/logs, then interact with the bot in TeamTalk via private messages.</li>
+  </ol>
+
+  <h2>Configuration Overview (<code>config.json</code>)</h2>
+  <p>Below is a mirror of the inline comments that used to live in <code>config.py</code>.</p>
+  <h3>Server &amp; Credentials</h3>
+  <ul>
+    <li><code>SERVER_HOST</code>, <code>TCP_PORT</code>, <code>UDP_PORT</code>: address/ports of your TeamTalk server.</li>
+    <li><code>SERVER_ENCRYPTION_ENABLED</code>: set true if the TeamTalk server requires TLS/DTLS.</li>
+    <li><code>TLS_CERTIFICATE_FILE</code>, <code>TLS_PRIVATE_KEY_FILE</code>, <code>TLS_CA_FILE</code>, <code>TLS_CA_DIR</code>, <code>TLS_VERIFY_SERVER</code>, <code>TLS_VERIFY_CLIENT_ONCE</code>, <code>TLS_VERIFY_DEPTH</code>: optional certificate paths and verification controls when TLS is enabled.</li>
+    <li><code>TEAMTALK_LICENSE_NAME</code>, <code>TEAMTALK_LICENSE_KEY</code>: SDK license credentials provided by BearWare.dk. Both must be filled or the bot runs in demo mode.</li>
+    <li><code>ADMIN_USERNAME</code>, <code>ADMIN_PASSWORD</code>: admin account the bot uses to log in and perform privileged actions.</li>
+  </ul>
+  <h3>Bot Identity</h3>
+  <ul>
+    <li><code>BOT_NICKNAME</code>, <code>CLIENT_NAME</code>: values shown to other users.</li>
+    <li><code>BOT_DEFAULT_STATUS_MESSAGE</code>, <code>BOT_DEFAULT_STATUS_MODE</code>: status text and availability mode (0=Available, 1=Away, 2=Question).</li>
+  </ul>
+  <h3>User Rights Template</h3>
+  <p><code>DEFAULT_USER_RIGHTS</code> maps each <code>UserRight</code> enum name to <code>"yes"</code>/<code>"no"</code>. This template is applied to every account created via the registration wizard.</p>
+  <h3>Channel Defaults</h3>
+  <ul>
+    <li><code>LOGIN_CHANNEL_PATH</code>/<code>LOGIN_CHANNEL_PASSWORD</code>: lobby the bot joins after login.</li>
+    <li><code>CREATE_CHANNEL_PARENT_PATH</code>: base path for new channels ("" or "/" means root).</li>
+    <li><code>CHANNEL_DEFAULTS</code>: properties applied when creators choose default settings &mdash; includes <code>max_users</code> (0 locks channel), <code>disk_quota_mb</code> (0 disables uploads), plus boolean flags (<code>permanent</code>, <code>hidden</code>, <code>no_interruptions</code>, <code>classroom</code>, <code>operator_receive_only</code>, <code>no_voice_activation</code>, <code>no_recording</code>).</li>
+  </ul>
+  <h3>Audio Defaults</h3>
+  <p><code>AUDIO_DEFAULTS</code> controls Opus characteristics when users accept the defaults:</p>
+  <ul>
+    <li><code>application</code>: <code>"voip"</code> or <code>"music"</code>.</li>
+    <li><code>sample_rate</code>: one of 8000/12000/16000/24000/48000.</li>
+    <li><code>channels</code>: <code>"mono"</code> or <code>"stereo"</code>.</li>
+    <li><code>bitrate_kbps</code>: choose from 16/32/64/128/256/320.</li>
+    <li><code>transmit_interval_ms</code>: multiples of 20 between 20&ndash;500.</li>
+    <li><code>frame_size_ms</code>: multiples of 20 up to 120.</li>
+    <li>Booleans <code>variable_bitrate</code>, <code>ignore_silence</code> (maps to Opus DTX), <code>fixed_audio_volume</code> (EnableFixedAudioLevel) round out the profile.</li>
+  </ul>
+  <h3>Channel Lifecycle</h3>
+  <ul>
+    <li><code>CHANNEL_INACTIVITY_TIMEOUT</code>: object with <code>value</code> + <code>unit</code> (minutes/hours/days/weeks/months). Value &lt;= 0 disables auto deletion.</li>
+    <li><code>CHANNEL_DELETION_WARNING_SECONDS</code>: delay between warning message and deletion when only non-owners remain.</li>
+  </ul>
+  <h3>Channel Creation Rules</h3>
+  <ul>
+    <li><code>CHANNEL_CREATION_MAX_PER_USER</code>: cap on concurrently owned channels (0 = unlimited).</li>
+    <li><code>CHANNEL_CREATION_LIMIT_MESSAGE</code>: text sent when the limit is reached (<code>{limit}</code> placeholder available).</li>
+    <li><code>CHANNEL_CREATION_BLOCKED_USERNAMES</code>: case-insensitive list of users who may never create channels.</li>
+    <li><code>CHANNEL_CREATION_BLOCKED_MESSAGE</code>: response when a blocked user attempts creation.</li>
+  </ul>
+  <h3>Registration Policy</h3>
+  <ul>
+    <li><code>REGISTRATION_ALLOWED_USERNAMES</code>: usernames (case-insensitive) that may request new accounts. Typically <code>["guest"]</code> to limit spammers.</li>
+    <li><code>REGISTRATION_NOT_ALLOWED_MESSAGE</code>: text sent when disallowed users attempt registration.</li>
+    <li><code>REGISTRATION_IP_LIMIT</code>, <code>REGISTRATION_IP_WINDOW_MINUTES</code>, <code>REGISTRATION_IP_LIMIT_MESSAGE</code>: per-IP quota, window length, and message when quota is exceeded.</li>
+  </ul>
+  <h3>Abuse Throttling</h3>
+  <ul>
+    <li><code>ABUSE_LOGIN_COUNT</code>, <code>ABUSE_JOIN_COUNT</code>, <code>BADWORD_ABUSE_COUNT</code>: events per key within <code>ABUSE_WINDOW_SEC</code> before escalation.</li>
+    <li><code>ABUSE_TEMP_BAN_MINUTES</code>: temporary ban duration at stage 3.</li>
+    <li><code>ABUSE_LOGIN_WARNINGS</code>, <code>ABUSE_JOIN_WARNINGS</code>, <code>BADWORDS_WARNINGS</code>: text templates shown at each stage (use <code>{duration}</code> placeholder for minutes).</li>
+  </ul>
+  <h3>Badword Enforcement</h3>
+  <ul>
+    <li><code>BADWORDS_ENABLED</code>: master switch.</li>
+    <li><code>BADWORDS_INTERCEPT_TYPES</code>: list of message types to inspect (<code>"PRIVATE"</code>, <code>"CHANNEL"</code>, <code>"BROADCAST"</code>). Include entries to enable inspection of those scopes.</li>
+    <li><code>BADWORDS_FILE</code>: UTF-8 file storing one word per line (comma-separated values also supported). The bot writes new words here when admins use <code>/bwa</code>/<code>/bwd</code>.</li>
+    <li><code>BADWORDS_IGNORE_ADMINS</code>: skip enforcement for admin users when true.</li>
+    <li><code>BADWORDS_PROFILE_CHECK_ENABLED</code>: when true, nicknames/status messages are scanned via <code>moderation_utils.check_user_profile_badwords</code>.</li>
+  </ul>
+  <h3>Reconnection &amp; Event Loop</h3>
+  <ul>
+    <li><code>RECONNECT_MAX_ATTEMPTS</code>: stop retrying after this many failed attempts (0 = unlimited). When limit reached, bot shuts down to avoid resource usage.</li>
+    <li><code>RECONNECT_RETRY_DELAY_SEC</code>: delay between attempts.</li>
+    <li><code>EVENT_LOOP_WAIT_MS</code>: polling wait passed to <code>runEventLoop</code>. Lower values react faster but use more CPU.</li>
+    <li><code>EVENT_LOOP_SLEEP_SEC</code>: sleep inserted at the end of each loop iteration.</li>
+  </ul>
+  <h3>Logging</h3>
+  <ul>
+    <li><code>LOG_LEVEL</code>: one of DEBUG/INFO/WARNING/ERROR/CRITICAL.</li>
+    <li><code>LOG_FORMAT</code>, <code>LOG_DATE_FORMAT</code>: standard <code>logging</code> format strings.</li>
+  </ul>
+
+  <h2>Runtime Commands</h2>
+  <table>
+    <thead>
+      <tr><th>Command</th><th>Description</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>/ru [username]</code></td><td>Start interactive user registration. Bot checks username availability, then prompts for password and full name.</td><td>Use <code>/cancel</code> to abort.</td></tr>
+      <tr><td><code>/rc &lt;channel_name&gt;</code></td><td>Start the channel creation wizard.</td><td>Wizard asks for password, topic, channel props, and audio settings.</td></tr>
+      <tr><td><code>/dc &lt;path&gt; [--force]</code></td><td>Delete a channel. Non-admins can only delete channels they own.</td><td>Force skips confirmation.</td></tr>
+      <tr><td><code>/du &lt;username&gt; [--force]</code></td><td>Delete a user account. Non-admins may delete only themselves.</td><td>Bot will kick the deleted user if they are online.</td></tr>
+      <tr><td><code>/lc [path]</code></td><td>List channels (optionally under a path).</td><td>Results are chunked automatically.</td></tr>
+      <tr><td><code>/oc &lt;path&gt;</code></td><td>Show cached owner information.</td><td>&nbsp;</td></tr>
+      <tr><td><code>/so &lt;path&gt;|&lt;username&gt;</code></td><td>Admin-only: set channel owner.</td><td>&nbsp;</td></tr>
+      <tr><td><code>/to &lt;path&gt;|&lt;username&gt;</code></td><td>Transfer ownership (admin or current owner).</td><td>&nbsp;</td></tr>
+      <tr><td><code>/kc &lt;nick[,nick2...]&gt;[|reason]</code></td><td>Kick users by nickname.</td><td>&nbsp;</td></tr>
+      <tr><td><code>/bn &lt;nick[,nick2...]&gt;[|reason]</code></td><td>Ban users. Bot auto-kicks after ban applies.</td><td>&nbsp;</td></tr>
+      <tr><td><code>/ubn &lt;value[,value2...]&gt;</code></td><td>Unban (depends on <code>BAN_TARGET</code> config).</td><td>&nbsp;</td></tr>
+      <tr><td><code>/lb</code></td><td>List active bans.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/lu</code></td><td>List registered users.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/bwl</code></td><td>Show all badwords.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/bwa word[,word2...]</code></td><td>Add badwords live without restarting.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/bwd word[,word2...]</code></td><td>Remove badwords.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/cs &lt;status&gt;</code></td><td>Change bot status message.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/v</code></td><td>Show bot version, OS, and TeamTalk SDK version.</td><td>Admins also see binding/library paths.</td></tr>
+      <tr><td><code>/help [topic]</code></td><td>Overview or topic-specific help (topics documented in code).</td><td>&nbsp;</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Interactive Wizards</h2>
+  <h3>Registration Wizard (/ru)</h3>
+  <ol>
+    <li>User runs <code>/ru</code> (optionally with a username).</li>
+    <li>Bot validates username format, checks availability via <code>doListUserAccounts</code>.</li>
+    <li>Once available, bot prompts for password (strong policy enforced) and full name.</li>
+    <li>On success, bot submits <code>doNewUserAccount</code>, records IP throttling metadata, and confirms completion.</li>
+  </ol>
+
+  <h3>Channel Wizard (/rc)</h3>
+  <ol>
+    <li>User runs <code>/rc &lt;name&gt;</code>; bot ensures no slashes or leading symbols.</li>
+    <li>Prompts: channel password, topic, operator password, property overrides (max users, flags), default usage choice.</li>
+    <li>Audio questionnaire (or default) includes application, sample rate, mono/stereo, bitrate, VBR, ignore silence, transmit interval, frame size, fixed volume.</li>
+    <li>Bot issues <code>doMakeChannel</code>, tracks ownership, announces TTL if auto-cleanup enabled.</li>
+  </ol>
+
+  <h2>Automatic Channel Cleanup</h2>
+  <p>
+    When <code>CHANNEL_INACTIVITY_TIMEOUT</code> is enabled, channels created through the bot are
+    periodically checked:
+  </p>
+  <ul>
+    <li>Owner presence refreshes <code>last_active_at</code>.</li>
+    <li>If TTL expires and only non-owners are present, bot moves into the channel, sends a warning message, returns to its original channel, and schedules deletion after <code>CHANNEL_DELETION_WARNING_SECONDS</code>.</li>
+    <li>If the owner rejoins before the timer elapses, deletion is cancelled; otherwise the bot removes the channel.</li>
+  </ul>
+
+  <h2>Badword Management</h2>
+  <p>
+    Badwords live in the UTF-8 file configured via <code>BADWORDS_FILE</code>. The bot loads the file at startup and
+    keeps it in sync whenever <code>/bwa</code> or <code>/bwd</code> is used. Filters operate on channel, broadcast,
+    private, and profile text depending on configuration.</p>
+
+  <h2>Abuse Tracking</h2>
+  <p>
+    The <code>AbuseTracker</code> monitors login/join/badword events per IP or user. Thresholds per kind
+    are configurable. Each escalation clears the event bucket and steps through warnings,
+    kicks, and auto-temp bans as defined in <code>config.py</code>.</p>
+
+  <h2>Running &amp; Deployment</h2>
+  <ul>
+    <li>Run under a dedicated system user. Consider <code>systemd</code> or a Windows service for production.</li>
+    <li>Monitor logs through standard output or redirect to files; logging is configured before bot initialization.</li>
+    <li>On Linux/WSL ensure <code>libTeamTalk5.so</code> is in <code>$PWD</code> or added to <code>LD_LIBRARY_PATH</code>.</li>
+    <li>Use <code>python3 -m compileall</code> or run unit-style smoke tests after refactors to ensure no syntax regressions.</li>
+  </ul>
+
+  <h2>Maintenance Guidelines</h2>
+  <div class="note">
+    <strong>SDK Boundary:</strong> Never edit files inside <code>TeamTalkPy/</code> or <code>TeamTalk_DLL/</code>.
+    Treat them as vendor dependencies.
+  </div>
+  <ul>
+    <li>All Python files must remain UTF-8 encoded and PEP 8 compliant (use <code>ruff</code> or <code>flake8</code> if desired).</li>
+    <li>Add docstrings for every new module, class, and function—mirror existing style.</li>
+    <li>Keep configuration-driven behaviors documented in <code>docs/index.html</code> and <code>CHANGELOG.md</code>.</li>
+    <li>When adding commands, update <code>help_texts.py</code> and <code>command_handler.py</code> in tandem.</li>
+    <li>Do not share business logic between wizards and command handlers through global state; prefer helper modules.</li>
+    <li>Always update <code>__version__</code> in <code>version.py</code> and add release notes to <code>CHANGELOG.md</code>.</li>
+  </ul>
+
+  <h2>Contact</h2>
+  <p>
+    Developed by <strong>Rexya Muhamad Rizki</strong> — <a href="mailto:rexya2017@gmail.com">rexya2017@gmail.com</a> — <a href="https://infiartt.ccom" target="_blank" rel="noopener">https://infiartt.ccom</a>
+  </p>
+</body>
+</html>

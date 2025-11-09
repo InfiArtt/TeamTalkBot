@@ -1,0 +1,6 @@
+*.json
+__pycache__/
+*.pyc
+*.dat
+/libTeamTalk5.so
+TeamTalk_DLL/
