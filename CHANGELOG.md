@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-09-28
+### Added
+- Licensed under GPL-3.0-or-later (`LICENSE`), with an additional permission (section 7) to combine the bot with the proprietary TeamTalk 5 SDK.
+- `tools/download_sdk.py` installs the TeamTalk 5 SDK from BearWare.dk (native library + `TeamTalkPy` binding from the same release; `--archive` for a file downloaded by hand). The SDK is no longer kept in the repository: `TeamTalkPy/` is now git-ignored like the native libraries.
+- Wildcards in badword entries: `*` matches any characters inside one word (symbols included) and `?` exactly one character, e.g. `anj*ng` catches `anjing`, `anjeng`, `anjiing` and the censored `anj*ng`. Entries need at least 3 letters or digits besides the wildcards; `/bwa` rejects broader ones with an explanation and they are ignored when found in the file.
+- Stretched spellings are caught automatically: a word with a letter typed 3+ times in a row is also compared with repeated letters collapsed, so `anjing` catches `anjiiiing` and `annnnjing` (also for phrases and wildcard entries). Plain double letters are not collapsed, so `cook` is not read as `cok`.
+- fail2ban-style control of the automatic moderation: `/abs` shows everyone with a warning and every active temp ban (numbered, with time left); `/abf <number|username|IP>` clears warnings, cancels kicks/bans that are about to run and lifts temp bans at once; `/abw` manages a whitelist (usernames/IPs never auto-punished, stored in `ABUSE_WHITELIST_FILE`); `/tb <nick> <minutes>[|reason]` issues a temporary ban that lifts itself; `/ab` is a step-by-step menu for all of these.
+- Runtime feature switches: `/abt` (and option 5 of the `/ab` menu) turns login-spam, join-spam, message-spam, badword (messages), badword (nickname/status) and private-message checks on or off; option 6 of `/bw` flips the badword filter. Defaults come from `config.json` (new keys `ABUSE_LOGIN_ENABLED`, `ABUSE_JOIN_ENABLED`); only switches that differ are stored, in `feature_toggles.json`, so they survive restarts without the bot rewriting `config.json`. Switching a feature off clears its current warnings and cancels kicks/bans still pending.
+- `/bw` menu that walks admins through listing, searching, adding, deleting and testing badwords.
+- `/bwl [search]` shows a numbered list (optionally filtered); `/bwd` accepts those numbers (`3`, `3,5`, `3-5`), which keep pointing at the list the admin heard even after deletions.
+- `/bwt <text>` shows which entries would flag a text, without warning anyone.
+- `/bwa` and `/bwd` answer in a single message, including entries that were already present or not found.
+
+### Changed
+- Wizards (`/rc`, `/ru`) end after 3 minutes without a reply, and expired `/dc`/`/du` confirmations now notify the user. Open prompts are dropped when the user logs out.
+- `/dc` checks channel ownership before asking for confirmation instead of after.
+- `badwords/words.txt` rebuilt for Indonesian and English with wildcards (94 → 142 entries): suffix patterns such as `kontol*`, `bangs?t*`, `goblo*`, `*fuck*`, `shit*`, plus common English profanity and slurs. Checked against the 50,000 most frequent words of each language (OpenSubtitles frequency lists): patterns that hit normal words were dropped (e.g. `memek*` matched *memekik*/*memekakkan*, `anjing*` matched *anjingku* in pet talk, `*shit*` matched Japanese names like *ashita*). It catches 73/73 test variants (old list: 17/73) and none of 50 look-alike normal words. Entries admins removed on the server (gila, sinting, anjir, iblis, setan, vcs, monyed) stay out.
+- Login abuse is counted per person (username + IP) instead of per IP, so several students logging in from one school network no longer trigger warnings (and eventually an IP ban for the whole network).
+
+### Fixed
+- Unstable connections were punished as join/login spam: every drop-and-reconnect counted as a login and the client's automatic rejoin as a channel join (89% of repeated join warnings in production came from a new session on the same IP). Joins within 10 s after a session's login are no longer counted, joins are counted per person (username + IP) instead of per IP, and a login arriving while the same username+IP is still online or within 3 s after its logout is treated as a reconnect (up to 5 per person per 5 minutes).
+- When the bot itself (re)logged in, the server's replay of all online users was counted as fresh logins and joins, producing warnings right after bot restarts. Events during the bot's login command are now ignored.
+- Admins were flagged by the private-message badword filter for their own `/bwa`/`/bwd` commands (the command text contains the badword), up to being kicked. Admin badword commands (`/bw`, `/bwl`, `/bwa`, `/bwd`, `/bwt`) are no longer checked; admins' normal chat still is.
+- While a user had a wizard or confirmation open, private messages they sent to *other* users (intercepted for moderation) were taken as answers; e.g. a "y" to a friend confirmed a pending `/dc`, or chat text became the channel password. The TeamTalk client library never fills `nToUserID` (the server sends `destuserid`, the client reads `userid`), so the bot now pauses PM interception for a user while their prompt is open and resumes it afterwards. Everyone else stays intercepted.
+- Temporary bans silently failed when the stage-2 kick disconnected the user first (`CMDERR_USER_NOT_FOUND`, 3006), which then made the auto-unban fail with 3007. Temp bans now target the IP (`doBanIPAddress`) or username (`doBan`) directly, and the username is captured when stage 3 triggers.
+- Temporary bans were only remembered in memory, so a bot restart during a ban made it permanent. Active temp bans are now stored in `temp_bans.dat` and lifted after a restart (once the bot is logged in); `/ubn` also removes them from that list.
+- `/ubn` unbanned by username when `BAN_TARGET` was `"IPADDRESS"`, so IP bans could not be lifted from the bot. Ban and unban now share one IP/username check.
+- Long messages split by the SDK into several `bMore` fragments were processed fragment by fragment: one pasted text counted as several messages for anti-spam, badwords spanning two fragments were missed, and each fragment reached wizards as a separate answer. Fragments are now joined before processing.
+- Multi-word badword entries such as `orang gila` could never match; they now match consecutive words.
+- A malformed `config.json` was silently ignored and the bot ran with built-in defaults (default server, `admin`/`admin`, default policies). The bot now stops with an error naming the problem; a UTF-8 BOM is accepted.
+
+### Security
+- `/lc` no longer lists hidden channels (or channels nested under them) to non-admin users.
+- Bot log files (`teamtalk.log`, `teamtalk.err`), which contain user IP addresses, are now git-ignored.
+
+## [1.1.0] - 2026-08-02
+### Added
+- Comprehensive Message Anti-Spam system for `CHANNEL`, `BROADCAST`, and `PRIVATE` messages, fully integrated with AbuseTracker.
+- Added per-category time windows support to `AbuseTracker` (e.g., a short 10s window for message spam vs a 90s window for login abuse).
+- Added `ANTISPAM_*` configuration variables to `config.py` and `config.json`, including an `ANTISPAM_IGNORE_ADMINS` bypass.
+
+### Fixed
+- Fixed an issue where the bot incorrectly replied "Command not recognized" to casual chat containing `/` commands intercepted from other users in private messaging.
+- Fixed a bug where message spam warnings were not being delivered to violators due to a missing category mapping in `_get_warning_message`.
+- Fixed an automatic temporary unban failure (Error 3007) for IP addresses caused by a mismatched string check (`IPADDR` vs `IPADDRESS`).
+
 ## [1.0.0] - 2025-08-15
 ### Added
 - Interactive badword management commands (`/bwl`, `/bwa`, `/bwd`) with persistent storage.

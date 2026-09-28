@@ -5,13 +5,18 @@ from TeamTalkPy.TeamTalk5 import UserType
 from tt_compat import from_tt_char
 
 
-def check_text_badwords(client, textmessage):
-    """Inspect a text message and escalate to the bot's violation handler."""
+def check_text_badwords(client, textmessage, content=None):
+    """Inspect a text message and escalate to the bot's violation handler.
+
+    ``content`` carries the reassembled text of multi-part messages; when
+    omitted, the message's own ``szMessage`` is used.
+    """
     try:
         from_uid = textmessage.nFromUserID
         if from_uid == (client.getMyUserID() or 0):
             return
-        content = from_tt_char(textmessage.szMessage)
+        if content is None:
+            content = from_tt_char(textmessage.szMessage)
         if not content:
             return
         if getattr(config, "BADWORDS_IGNORE_ADMINS", True):

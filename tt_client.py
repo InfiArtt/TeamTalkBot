@@ -3,14 +3,20 @@
 from ctypes import byref
 import logging
 import heapq
-from typing import Dict, List, Any, Optional
+import re
+from typing import Dict, List, Any, Optional, Tuple
 import time
 
 from command_handler import parse_private_command
 from help_texts import get_topic_help
 from badwords import BadWordsFilter
 from abuse_tracker import AbuseTracker
+from abuse_whitelist import AbuseWhitelist
+import abuse_menu
+import badword_menu
+import feature_toggles
 import moderation_utils
+import temp_ban_store
 import channel_wizard
 import cache_store
 import config
@@ -41,6 +47,7 @@ from TeamTalkPy.TeamTalk5 import (
     BannedUser,
     Subscription,
     setLicense,
+    ClientEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -149,6 +156,12 @@ class BotClient(TeamTalk):
         self._pending_delete_path = {}  # cmdid -> path
         self._channel_wizards = {}  # user_id -> session dict
         self._registration_wizards = {}  # user_id -> session dict
+        self._badword_menus = {}  # user_id -> /bw menu session dict
+        self._abuse_menus = {}  # user_id -> /ab menu session dict
+        # user_id -> entries of the last numbered list shown to that admin
+        self._badword_list_snapshots: Dict[int, List[str]] = {}
+        self._abuse_status_snapshots: Dict[int, List[tuple]] = {}
+        self._whitelist_snapshots: Dict[int, List[str]] = {}
         self._username_checks = (
             {}
         )  # cmdid -> {"requester": int, "username": str, "found": bool}
@@ -168,6 +181,12 @@ class BotClient(TeamTalk):
         self._list_users_requester = None
         self._list_users_buffer = []
         self._list_users_cmdid = None
+        # Admin on/off switches that override config.json (see /abt)
+        known_features = {name for name, _desc, _key in self._FEATURES}
+        self._feature_overrides: Dict[str, bool] = {
+            k: v for k, v in (safe_call(feature_toggles.read, default={}) or {}).items()
+            if k in known_features
+        }
         # Init badwords and abuse tracker
         self._badwords = BadWordsFilter()
         try:
@@ -186,11 +205,50 @@ class BotClient(TeamTalk):
             join_count=int(getattr(config, "ABUSE_JOIN_COUNT", 10) or 10),
             badword_count=int(getattr(config, "BADWORD_ABUSE_COUNT", 1) or 1),
             window_sec=int(getattr(config, "ABUSE_WINDOW_SEC", 60) or 60),
+            message_count=int(getattr(config, "ANTISPAM_MESSAGE_COUNT", 7) or 7),
+            message_window_sec=int(getattr(config, "ANTISPAM_MESSAGE_WINDOW_SEC", 10) or 10),
         )
         self._temp_ban_minutes = int(
             getattr(config, "ABUSE_TEMP_BAN_MINUTES", 30) or 30
         )
+        # Who each tracked (kind, key) refers to, for /abs and /abf
+        self._abuse_subjects: Dict[Tuple[str, str], Dict[str, str]] = {}
+        # abuse key -> when an admin forgave it; cancels kicks/bans still pending
+        self._forgiven: Dict[str, float] = {}
+        self._whitelist = AbuseWhitelist()
+        whitelist_path = str(
+            getattr(config, "ABUSE_WHITELIST_FILE", "") or "abuse_whitelist.txt"
+        )
+        try:
+            self._whitelist.load_file(whitelist_path)
+        except Exception:
+            logger.warning("Failed to load abuse whitelist: %s", whitelist_path)
+        # "<mode>:<label>" -> active temp ban; persisted so that a restart during
+        # a ban cannot turn it into a permanent one
+        try:
+            self._temp_bans: Dict[str, Dict[str, Any]] = temp_ban_store.read()
+        except Exception:
+            self._temp_bans = {}
         self._subscription_cache: Dict[int, int] = {}
+        self._bot_user_id: int = 0  # set after login; used to filter intercepted PMs
+        # Holds the real nToUserID of the PM being processed in the current event loop
+        # iteration.  The TeamTalk library strips this field before calling
+        # onCmdUserTextMessage, so we capture it ourselves in runEventLoop.
+        self._current_pm_to_user_id: int = 0
+        # Buffers fragments of long text messages (bMore) until the final part
+        self._text_fragments: Dict[tuple, Dict[str, Any]] = {}
+        # Users answering a prompt (wizard/confirmation) -> last activity time.
+        # Their PMs are not intercepted meanwhile; see _sync_prompt_intercepts.
+        self._prompt_activity: Dict[int, float] = {}
+        # While our own login is processed the server replays every online user
+        # as logged-in/joined events; those are not user actions.
+        self._login_cmdid = 0
+        self._login_sync_until = 0.0
+        # user_id -> when that session logged in (only logins seen live)
+        self._session_login_ts: Dict[int, float] = {}
+        # (username, ip) -> last logout time / times of recent reconnects
+        self._recent_logouts: Dict[Tuple[str, str], float] = {}
+        self._reconnect_history: Dict[Tuple[str, str], List[float]] = {}
         self._status_mode = None
         self._status_msg = None
         logger.info(
@@ -217,6 +275,24 @@ class BotClient(TeamTalk):
         except Exception:
             pass
         self._initialize_channel_expiry()
+        self._schedule_action(
+            self._now() + self._PROMPT_CHECK_INTERVAL_SEC, self._prompt_housekeeping
+        )
+        self._schedule_action(
+            self._now() + self._MODERATION_HOUSEKEEPING_SEC,
+            self._moderation_housekeeping,
+        )
+        # Lift bans that were active before a restart (right away if overdue;
+        # _lift_temp_ban waits for the login)
+        for entry in list(self._temp_bans.values()):
+            self._schedule_action(
+                max(entry["until"], self._now() + 5),
+                self._lift_temp_ban,
+                entry["mode"],
+                entry["label"],
+                entry.get("key", ""),
+                entry.get("kind", ""),
+            )
 
     def connect(
         self,
@@ -278,40 +354,81 @@ class BotClient(TeamTalk):
     def doUnbanUserEx(self, banned_user: BannedUser) -> int:
         return super().doUnbanUserEx(byref(banned_user))
 
+    def doBan(self, banned_user: BannedUser) -> int:
+        return super().doBan(byref(banned_user))
+
     def getChannelIDFromPath(self, path):
         return super().getChannelIDFromPath(self._tt_value(path))
 
     def getChannelPath(self, channel_id: int) -> str:
         return from_tt_char(super().getChannelPath(channel_id))
 
-    # Badwords config helpers
-    def _bw_enabled(self) -> bool:
-        try:
-            return bool(getattr(config, "BADWORDS_ENABLED", True))
-        except Exception:
-            return True
+    # ============ Feature switches (/abt) ============
+    # name -> (description, config key holding the default). "pm" has no key of
+    # its own: it adds or removes PRIVATE in the *_INTERCEPT_TYPES lists.
+    _FEATURES = (
+        ("login", "Login/logout spam detection", "ABUSE_LOGIN_ENABLED"),
+        ("join", "Channel join/leave spam detection", "ABUSE_JOIN_ENABLED"),
+        ("spam", "Message spam detection", "ANTISPAM_MESSAGE_ENABLED"),
+        ("badwords", "Badword filter for messages", "BADWORDS_ENABLED"),
+        ("profile", "Badword check of nicknames and status", "BADWORDS_PROFILE_CHECK_ENABLED"),
+        ("pm", "Check private messages between users", None),
+    )
+    _DEFAULT_BW_TYPES = ["PRIVATE", "CHANNEL", "BROADCAST"]
 
-    def _bw_profile_enabled(self) -> bool:
+    def _config_types(self, key: str, default: List[str]) -> set:
         try:
-            return self._bw_enabled() and bool(
-                getattr(config, "BADWORDS_PROFILE_CHECK_ENABLED", True)
-            )
-        except Exception:
-            return self._bw_enabled()
-
-    def _bw_types(self):
-        try:
-            vals = (
-                getattr(
-                    config,
-                    "BADWORDS_INTERCEPT_TYPES",
-                    ["PRIVATE", "CHANNEL", "BROADCAST"],
-                )
-                or []
-            )
+            vals = getattr(config, key, default) or []
             return {str(v).strip().upper() for v in vals if str(v).strip()}
         except Exception:
-            return {"PRIVATE", "CHANNEL", "BROADCAST"}
+            return set(default)
+
+    def _feature_default(self, name: str) -> bool:
+        """The feature's state according to config.json."""
+        if name == "pm":
+            return "PRIVATE" in (
+                self._config_types("BADWORDS_INTERCEPT_TYPES", self._DEFAULT_BW_TYPES)
+                | self._config_types("ANTISPAM_INTERCEPT_TYPES", [])
+            )
+        if name == "profile":
+            # In config.json the profile check also depends on BADWORDS_ENABLED
+            return _config_bool(
+                getattr(config, "BADWORDS_ENABLED", True), True
+            ) and _config_bool(getattr(config, "BADWORDS_PROFILE_CHECK_ENABLED", True), True)
+        key = {n: k for n, _desc, k in self._FEATURES}.get(name)
+        return _config_bool(getattr(config, key, True), True) if key else True
+
+    def _feature_on(self, name: str) -> bool:
+        """Current state: an admin's /abt switch if set, else config.json."""
+        if name in self._feature_overrides:
+            return self._feature_overrides[name]
+        return self._feature_default(name)
+
+    def _with_pm_switch(self, types: set) -> set:
+        if "pm" in self._feature_overrides:
+            types = set(types)
+            if self._feature_overrides["pm"]:
+                types.add("PRIVATE")
+            else:
+                types.discard("PRIVATE")
+        return types
+
+    def _bw_enabled(self) -> bool:
+        return self._feature_on("badwords")
+
+    def _bw_profile_enabled(self) -> bool:
+        return self._feature_on("profile")
+
+    def _bw_types(self):
+        return self._with_pm_switch(
+            self._config_types("BADWORDS_INTERCEPT_TYPES", self._DEFAULT_BW_TYPES)
+        )
+
+    def _spam_enabled(self) -> bool:
+        return self._feature_on("spam")
+
+    def _spam_types(self):
+        return self._with_pm_switch(self._config_types("ANTISPAM_INTERCEPT_TYPES", []))
 
     def _reconnect_delay_seconds(self) -> float:
         try:
@@ -480,30 +597,91 @@ class BotClient(TeamTalk):
         self._connected = True
         self._reconnect_attempts = 0
         self._reconnect_scheduled = False
-        self.doLogin(
+        self._start_login()
+        logger.info(
+            "Connected to server; issuing login request as %s", config.ADMIN_USERNAME
+        )
+
+    # Upper bound on the replay window in case the login's completion is missed
+    _LOGIN_SYNC_MAX_SEC = 30.0
+
+    def _start_login(self) -> int:
+        cmdid = self.doLogin(
             config.BOT_NICKNAME,
             config.ADMIN_USERNAME,
             config.ADMIN_PASSWORD,
             config.CLIENT_NAME,
         )
-        logger.info(
-            "Connected to server; issuing login request as %s", config.ADMIN_USERNAME
-        )
+        self._login_cmdid = cmdid if cmdid and cmdid > 0 else 0
+        self._login_sync_until = self._now() + self._LOGIN_SYNC_MAX_SEC
+        return cmdid
+
+    def onCmdProcessing(self, cmdId: int, complete: bool):
+        # The server sends all online users inside our login command; once it
+        # completes, later login/join events are real user actions
+        if complete and cmdId and cmdId == self._login_cmdid:
+            self._login_cmdid = 0
+            self._login_sync_until = 0.0
+            logger.debug("Initial user list received; login/join tracking active")
+
+    def runEventLoop(self, nWaitMSec: int = -1):
+        """Override to attempt capturing nToUserID before the SDK processes the event.
+
+        Unfortunately TeamTalk SDK always delivers ``textmessage.nToUserID = 0``
+        for received PM events (both direct PMs and intercepts), so this field
+        cannot reliably distinguish the two cases.  The override is kept as a
+        hook for future SDK versions that may populate this field.
+        """
+        super().runEventLoop(nWaitMSec)
+
+    def _clear_pending_states(self):
+        """Clean up all wizard sessions, pending commands, and temp buffers upon connection changes to avoid leaks."""
+        self._pending_cmd.clear()
+        self._confirmations.clear()
+        self._pending_create_owner.clear()
+        self._pending_delete_path.clear()
+        self._channel_wizards.clear()
+        self._registration_wizards.clear()
+        self._badword_menus.clear()
+        self._abuse_menus.clear()
+        self._badword_list_snapshots.clear()
+        self._abuse_status_snapshots.clear()
+        self._whitelist_snapshots.clear()
+        self._username_checks.clear()
+        self._username_check_cmd_by_user.clear()
+        self._list_bans_buffer.clear()
+        self._list_users_buffer.clear()
+        self._subscription_cache.clear()
+        self._text_fragments.clear()
+        self._prompt_activity.clear()
+        self._session_login_ts.clear()
+        self._recent_logouts.clear()
+        self._bot_user_id = 0
+        logger.info("Cleared all pending states and wizard sessions.")
+
+    def disconnect(self):
+        self._clear_pending_states()
+        try:
+            return super().disconnect()
+        except Exception:
+            pass
 
     def onConnectFailed(self):
         self._connected = False
+        self._clear_pending_states()
         self._queue_reconnect()
         logger.warning("Connection attempt failed; retry scheduled")
 
     def onConnectionLost(self):
         self._connected = False
         self._logged_in = False
-        self._subscription_cache.clear()
+        self._clear_pending_states()
         self._queue_reconnect()
         logger.warning("Connection lost; reconnect scheduled")
 
     def onCmdMyselfLoggedIn(self, userid, useraccount):
         self._logged_in = True
+        self._bot_user_id = int(userid or 0)
         self._subscription_cache.clear()
         self._status_mode = None
         self._status_msg = None
@@ -524,13 +702,7 @@ class BotClient(TeamTalk):
         self._status_mode = None
         self._status_msg = None
         # Try to re-login on same connection
-        safe_call(
-            self.doLogin,
-            config.BOT_NICKNAME,
-            config.ADMIN_USERNAME,
-            config.ADMIN_PASSWORD,
-            config.CLIENT_NAME,
-        )
+        safe_call(self._start_login)
         logger.info("Logged out from server; attempting re-login")
 
     def onCmdMyselfKickedFromChannel(self, channelid: int, user: User):
@@ -620,6 +792,8 @@ class BotClient(TeamTalk):
             self._subscription_cache.pop(user.nUserID, None)
         except Exception:
             pass
+        if not self._in_login_sync():
+            self._session_login_ts[user.nUserID] = self._now()
         safe_call(self._handle_abuse_login, user)
         if self._bw_profile_enabled():
             safe_call(moderation_utils.check_user_profile_badwords, self, user)
@@ -638,6 +812,31 @@ class BotClient(TeamTalk):
     def onCmdUserLoggedOut(self, user: User):
         try:
             self._subscription_cache.pop(user.nUserID, None)
+            for key in [k for k in self._text_fragments if k[1] == user.nUserID]:
+                self._text_fragments.pop(key, None)
+            # Drop any prompt the user left open
+            self._confirmations.pop(user.nUserID, None)
+            self._channel_wizards.pop(user.nUserID, None)
+            self._badword_menus.pop(user.nUserID, None)
+            self._abuse_menus.pop(user.nUserID, None)
+            self._badword_list_snapshots.pop(user.nUserID, None)
+            self._abuse_status_snapshots.pop(user.nUserID, None)
+            self._whitelist_snapshots.pop(user.nUserID, None)
+            if user.nUserID in self._registration_wizards:
+                self._cancel_registration_wizard(user.nUserID, notify=False)
+            self._prompt_activity.pop(user.nUserID, None)
+            # Remember the logout so an immediate re-login counts as a reconnect
+            self._session_login_ts.pop(user.nUserID, None)
+            person = self._person_key(user)
+            if person:
+                now = self._now()
+                self._recent_logouts[person] = now
+                for key in [
+                    k
+                    for k, ts in self._recent_logouts.items()
+                    if now - ts > self._RECONNECT_WINDOW_SEC
+                ]:
+                    self._recent_logouts.pop(key, None)
         except Exception:
             pass
 
@@ -657,28 +856,88 @@ class BotClient(TeamTalk):
         safe_call(self._subscribe_text_from_user, user.nUserID)
         logger.debug("Subscribed to user %s (update event)", user.nUserID)
 
+    # Fragments buffered per message before it is processed anyway, so a client
+    # that never sends the final part still counts towards anti-spam.
+    _MAX_TEXT_FRAGMENTS = 10
+    _TEXT_FRAGMENT_TTL_SEC = 30.0
+
+    def _assemble_text_message(self, textmessage: TextMessage) -> Optional[str]:
+        """Join multi-part messages; return None while more fragments are due.
+
+        The SDK splits long messages into several events flagged with ``bMore``.
+        Handling each fragment on its own made one pasted text count as several
+        messages for anti-spam and fed each part to wizards separately.
+        """
+        part = from_tt_char(textmessage.szMessage)
+        key = (
+            int(textmessage.nMsgType),
+            int(textmessage.nFromUserID),
+            int(textmessage.nToUserID),
+            int(textmessage.nChannelID),
+        )
+        now = self._now()
+        entry = self._text_fragments.get(key)
+        if entry and now - entry["ts"] > self._TEXT_FRAGMENT_TTL_SEC:
+            entry = None  # leftovers from a message that was never finished
+        if getattr(textmessage, "bMore", False):
+            if entry is None:
+                entry = {"parts": [], "ts": now}
+                self._text_fragments[key] = entry
+            entry["parts"].append(part)
+            entry["ts"] = now
+            if len(entry["parts"]) < self._MAX_TEXT_FRAGMENTS:
+                return None
+            self._text_fragments.pop(key, None)
+            return "".join(entry["parts"])
+        self._text_fragments.pop(key, None)
+        if entry is None:
+            return part
+        return "".join(entry["parts"]) + part
+
     def onCmdUserTextMessage(self, textmessage: TextMessage):
         try:
+            message_text = self._assemble_text_message(textmessage)
+            if message_text is None:
+                return
+            from_uid = textmessage.nFromUserID
+            # Filter bad words in channel / broadcast messages if configured
             if textmessage.nMsgType != TextMsgType.MSGTYPE_USER:
-                # Filter bad words di pesan channel / broadcast sesuai konfigurasi
                 if self._bw_enabled():
                     types = self._bw_types()
                     if textmessage.nMsgType == TextMsgType.MSGTYPE_CHANNEL and (
                         "CHANNEL" in types
                     ):
-                        moderation_utils.check_text_badwords(self, textmessage)
+                        moderation_utils.check_text_badwords(
+                            self, textmessage, message_text
+                        )
                     elif textmessage.nMsgType == TextMsgType.MSGTYPE_BROADCAST and (
                         "BROADCAST" in types
                     ):
-                        moderation_utils.check_text_badwords(self, textmessage)
+                        moderation_utils.check_text_badwords(
+                            self, textmessage, message_text
+                        )
+                
+                # Check antispam for channel / broadcast
+                if self._spam_enabled():
+                    spam_types = self._spam_types()
+                    if textmessage.nMsgType == TextMsgType.MSGTYPE_CHANNEL and (
+                        "CHANNEL" in spam_types
+                    ):
+                        self._handle_abuse_message(from_uid, self._get_user_ip(from_uid))
+                    elif textmessage.nMsgType == TextMsgType.MSGTYPE_BROADCAST and (
+                        "BROADCAST" in spam_types
+                    ):
+                        self._handle_abuse_message(from_uid, self._get_user_ip(from_uid))
                 return
             from_user = textmessage.nFromUserID
-            content = from_tt_char(textmessage.szMessage).strip()
+            content = message_text.strip()
+            if from_user in self._prompt_activity:
+                self._prompt_activity[from_user] = self._now()
             # Handle pending confirmations first
             pending = self._confirmations.get(from_user)
             if pending:
-                # expire after 120s
-                if self._now() - pending.get("ts", 0) > 120:
+                # expire after _CONFIRMATION_TIMEOUT_SEC
+                if self._now() - pending.get("ts", 0) > self._CONFIRMATION_TIMEOUT_SEC:
                     self._confirmations.pop(from_user, None)
                 else:
                     low = content.lower()
@@ -711,26 +970,56 @@ class BotClient(TeamTalk):
                             content,
                         )
                         return
+            # Check if user is in an active wizard — route input regardless of slash prefix
+            if from_user in self._registration_wizards:
+                registration_wizard.handle_response(self, from_user, content)
+                return
+            if from_user in self._channel_wizards:
+                channel_wizard.handle_response(self, from_user, content)
+                return
+            # Menus return False when another /command closed them
+            if from_user in self._badword_menus:
+                if badword_menu.handle_response(self, from_user, content):
+                    return
+            if from_user in self._abuse_menus:
+                if abuse_menu.handle_response(self, from_user, content):
+                    return
+            # Routing heuristic for private messages.
+            #
+            # The TeamTalk SDK always delivers textmessage.nToUserID = 0 for received
+            # PM events — both for PMs sent directly to this bot and for PMs between
+            # other users that arrive because the bot has SUBSCRIBE_INTERCEPT_USER_MSG.
+            # It is therefore impossible to determine the intended recipient from the
+            # message data alone.
+            #
+            # Rules applied:
+            #   1. Always run the badword filter for PRIVATE messages when enabled.
+            #   2. Always run the antispam filter for PRIVATE messages when enabled.
+            #   3. For non-slash messages: stop processing (they are likely casual chat).
+            #   4. For slash messages: attempt command parsing.
+            if (
+                self._bw_enabled()
+                and ("PRIVATE" in self._bw_types())
+                and not self._is_badword_admin_command(from_user, content)
+            ):
+                moderation_utils.check_text_badwords(self, textmessage, message_text)
+                
+            if self._spam_enabled():
+                spam_types = self._spam_types()
+                if "PRIVATE" in spam_types:
+                    self._handle_abuse_message(from_uid, self._get_user_ip(from_uid))
+                    
+            if not content.startswith("/"):
+                return
             parsed = parse_private_command(content)
             if not parsed:
-                if from_user in self._registration_wizards:
-                    registration_wizard.handle_response(self, from_user, content)
-                    return
-                # Check if user is in channel creation wizard
-                if from_user in self._channel_wizards:
-                    channel_wizard.handle_response(self, from_user, content)
-                else:
-                    # Terapkan filter badwords pada private message sesuai konfigurasi
-                    if self._bw_enabled() and ("PRIVATE" in self._bw_types()):
-                        moderation_utils.check_text_badwords(self, textmessage)
-                    if content:
-                        self.send_pm(
-                            from_user,
-                            "Command not recognized. Send /help for the command list.",
-                        )
-                        logger.debug(
-                            "User %s sent unknown command text: %s", from_user, content
-                        )
+                self.send_pm(
+                    from_user,
+                    "Command not recognized. Send /help for the command list.",
+                )
+                logger.debug(
+                    "User %s sent unknown command text: %s", from_user, content
+                )
                 return
             action, args = parsed
             logger.debug("Processing action '%s' from user %s", action, from_user)
@@ -755,7 +1044,25 @@ class BotClient(TeamTalk):
             elif action == "transfer_owner":
                 self._handle_transfer_owner(from_user, args["target"], args["username"])
             elif action == "badword_list":
-                self._handle_badword_list(from_user)
+                self._handle_badword_list(from_user, args.get("query", ""))
+            elif action == "badword_menu":
+                badword_menu.start(self, from_user)
+            elif action == "badword_test":
+                self._handle_badword_test(from_user, args["text"])
+            elif action == "abuse_menu":
+                abuse_menu.start(self, from_user)
+            elif action == "abuse_status":
+                self._handle_abuse_status(from_user)
+            elif action == "abuse_forgive":
+                self._handle_abuse_forgive(from_user, args["targets"])
+            elif action == "abuse_whitelist":
+                self._handle_abuse_whitelist(from_user, args.get("args", ""))
+            elif action == "feature_toggle":
+                self._handle_feature_toggle(from_user, args.get("args", ""))
+            elif action == "temp_ban":
+                self._handle_temp_ban(
+                    from_user, args["names"], args["minutes"], args.get("reason", "")
+                )
             elif action == "badword_add":
                 self._handle_badword_add(from_user, args["words"])
             elif action == "badword_delete":
@@ -781,6 +1088,9 @@ class BotClient(TeamTalk):
         except Exception as e:
             # Report errors to the sender without exposing the traceback
             safe_call(self.send_pm, textmessage.nFromUserID, f"An error occurred: {e}")
+        finally:
+            # The message may have opened or closed a prompt
+            safe_call(self._sync_prompt_intercepts)
 
     # Server command results
     def onCmdError(self, cmdId: int, errmsg):
@@ -1002,6 +1312,12 @@ class BotClient(TeamTalk):
 
         flush()
 
+    def _ban_target_is_ip(self) -> bool:
+        # Any BAN_TARGET other than USERNAME (e.g. IPADDR, IPADDRESS) bans by IP;
+        # ban and unban paths must share this check to stay consistent.
+        mode = str(getattr(config, "BAN_TARGET", "USERNAME") or "").strip().upper()
+        return mode != "USERNAME"
+
     def _abuse_key(self, user_id: int, ip: str) -> str:
         ip = str(ip or "").strip()
         return ip if ip else f"user:{user_id}"
@@ -1014,6 +1330,7 @@ class BotClient(TeamTalk):
                 "login": getattr(config, "ABUSE_LOGIN_WARNINGS", []),
                 "join": getattr(config, "ABUSE_JOIN_WARNINGS", []),
                 "badword": getattr(config, "BADWORDS_WARNINGS", []),
+                "message": getattr(config, "ABUSE_MESSAGE_WARNINGS", []),
             }
             msgs = mapping.get(kind, []) or []
             idx = stage - 1
@@ -1801,52 +2118,111 @@ class BotClient(TeamTalk):
         except Exception:
             logger.exception("Failed to schedule abuse kick for user %s", userid)
 
-    def _issue_temp_ban(self, userid: int, ip: str, reason: str, key: str, kind: str):
+    def _apply_temp_ban(
+        self,
+        userid: int,
+        ip: str,
+        username: str,
+        minutes: int,
+        reason: str,
+        key: str,
+        kind: str,
+        who: str = "",
+        by: str = "",
+        requester: int = 0,
+    ) -> str:
+        """Ban by IP or username (per BAN_TARGET) and schedule the automatic lift.
+
+        Returns the banned label, or '' when no ban could be sent.
+        """
+        ip = str(ip or "").strip()
+        username = str(username or "").strip()
+        use_ip = self._ban_target_is_ip()
+        # Fall back to the other ban type when the preferred label is unknown
+        if use_ip and not ip and username:
+            use_ip = False
+        elif not use_ip and not username and ip:
+            use_ip = True
+        label = ip if use_ip else username
+        if not label:
+            return ""
+        # Ban by IP/username instead of doBanUserEx(userid): the stage-2 kick
+        # often disconnects the user first, and a user-ID ban then fails with
+        # CMDERR_USER_NOT_FOUND, leaving the offender unbanned.
+        if use_ip:
+            mode = "IPADDR"
+            cmdid = self.doBanIPAddress(label, 0)
+        else:
+            mode = "USERNAME"
+            bu = BannedUser()
+            assign_tt_char_array((bu, "szUsername"), label)
+            bu.uBanTypes = BanType.BANTYPE_USERNAME
+            cmdid = self.doBan(bu)
+        if cmdid <= 0:
+            return ""
+        self._track_pending_cmd(
+            cmdid,
+            requester or userid,
+            f"temp ban '{label}' ({reason})",
+            notify=bool(requester),
+        )
+        until = self._now() + max(1, int(minutes)) * 60
+        self._temp_bans[f"{mode}:{label}"] = {
+            "mode": mode,
+            "label": label,
+            "until": until,
+            "reason": reason,
+            "key": key,
+            "kind": kind,
+            "who": who or username or label,
+            "username": username,
+            "by": by,
+        }
+        self._save_temp_bans()
+        self._schedule_action(until, self._lift_temp_ban, mode, label, key, kind)
+        return label
+
+    def _issue_temp_ban(
+        self,
+        userid: int,
+        ip: str,
+        username: str,
+        reason: str,
+        key: str,
+        kind: str,
+        who: str = "",
+    ):
         try:
-            mode = str(getattr(config, "BAN_TARGET", "USERNAME")).upper()
-            ban_type = (
-                BanType.BANTYPE_USERNAME
-                if mode == "USERNAME"
-                else BanType.BANTYPE_IPADDR
+            label = self._apply_temp_ban(
+                userid, ip, username, self._temp_ban_minutes, reason, key, kind, who=who
             )
-            label = ""
-            if ban_type == BanType.BANTYPE_USERNAME:
-                label = self._get_username(userid)
-                if not label:
-                    ban_type = BanType.BANTYPE_IPADDR
-                    mode = "IPADDR"
-                    label = ip
-            else:
-                label = ip
-            if not label and ban_type == BanType.BANTYPE_IPADDR:
-                fallback = self._get_username(userid)
-                if fallback:
-                    ban_type = BanType.BANTYPE_USERNAME
-                    mode = "USERNAME"
-                    label = fallback
             if not label:
                 return
-            cmdid = self.doBanUserEx(userid, ban_type)
-            if cmdid <= 0:
-                return
-            self._track_pending_cmd(
-                cmdid, userid, f"temp ban '{label}' ({reason})", notify=False
-            )
-            unban_at = self._now() + max(1, self._temp_ban_minutes) * 60
-            self._schedule_action(unban_at, self._lift_temp_ban, mode, label, key, kind)
             # Ensure user is removed immediately after ban is applied (with slight delay to flush warning)
-            self._schedule_action(
-                self._now() + 3.0, self._kick_user_for_abuse, userid, reason
+            self._schedule_abuse_action(
+                key, 3.0, self._kick_user_for_abuse, userid, reason
             )
             logger.info(
-                "Temporary ban issued (user=%s, label=%s, mode=%s, duration=%s min)",
+                "Temporary ban issued (user=%s, label=%s, duration=%s min)",
                 userid,
                 label,
-                mode,
                 self._temp_ban_minutes,
             )
         except Exception:
             logger.exception("Failed to issue temporary ban for user %s", userid)
+
+    def _schedule_abuse_action(self, key: str, delay: float, fn, *args):
+        """Schedule an automatic kick/ban that /abf can still cancel."""
+        now = self._now()
+        self._schedule_action(now + delay, self._run_abuse_action, key, now, fn, *args)
+
+    def _run_abuse_action(self, key: str, created_at: float, fn, *args):
+        if self._forgiven.get(key, -1.0) >= created_at:
+            logger.info(
+                "Skipped %s for %s: forgiven by an admin", getattr(fn, "__name__", fn), key
+            )
+            return
+        fn(*args)
 
     def _handle_abuse_stage(
         self, kind: str, stage: int, userid: int, ip: str, reason: str, key: str
@@ -1865,24 +2241,48 @@ class BotClient(TeamTalk):
                 key,
             )
         if stage == 2:
-            self._schedule_action(
-                self._now() + 3.0, self._kick_user_for_abuse, userid, reason
+            self._schedule_abuse_action(
+                key, 3.0, self._kick_user_for_abuse, userid, reason
             )
         elif stage == 3:
-            self._schedule_action(
-                self._now() + 3.0, self._issue_temp_ban, userid, ip, reason, key, kind
+            # Resolve names now; the user may be gone when the ban runs
+            username = self._get_username(userid)
+            who = self._abuse_subjects.get((kind, key), {}).get("nick", "")
+            self._schedule_abuse_action(
+                key,
+                3.0,
+                self._issue_temp_ban,
+                userid,
+                ip,
+                username,
+                reason,
+                key,
+                kind,
+                who,
             )
 
-    def _lift_temp_ban(self, mode: str, label: str, key: str, kind: str):
+    def _lift_temp_ban(
+        self, mode: str, label: str, key: str, kind: str, force: bool = False
+    ):
+        mode = "IPADDR" if str(mode or "").upper() in ("IPADDR", "IPADDRESS") else "USERNAME"
+        entry_key = f"{mode}:{label}"
+        entry = self._temp_bans.get(entry_key)
+        if entry is None:
+            # Already lifted by /abf or /ubn
+            safe_call(self._abuse.reset, kind, key)
+            return
+        if not force and entry.get("until", 0) > self._now() + 1:
+            return  # extended by a newer ban, whose own lift is scheduled
+        if not self._logged_in:
+            # Unbanning needs the admin session; try again shortly
+            self._schedule_action(
+                self._now() + 10, self._lift_temp_ban, mode, label, key, kind, force
+            )
+            return
         try:
-            mode = str(mode or "").upper()
             if mode == "IPADDR":
                 cmdid = self.doUnBanUser(label, 0)
-                if cmdid > 0:
-                    self._track_pending_cmd(
-                        cmdid, 0, f"auto unban IP '{label}'", notify=False
-                    )
-                    logger.info("Auto-unban requested for IP %s", label)
+                desc = f"auto unban IP '{label}'"
             else:
                 bu = BannedUser()
                 assign_tt_char_array((bu, "szUsername"), label)
@@ -1892,23 +2292,70 @@ class BotClient(TeamTalk):
                 assign_tt_char_array((bu, "szNickname"), "")
                 assign_tt_char_array((bu, "szOwner"), "")
                 cmdid = self.doUnbanUserEx(bu)
-                if cmdid > 0:
-                    self._track_pending_cmd(
-                        cmdid, 0, f"auto unban user '{label}'", notify=False
-                    )
-                    logger.info("Auto-unban requested for user %s", label)
+                desc = f"auto unban user '{label}'"
         except Exception:
             logger.exception("Failed to auto-unban %s (mode=%s)", label, mode)
-        finally:
-            try:
-                self._abuse.reset(kind, key)
-            except Exception:
-                pass
+            cmdid = 0
+        if cmdid <= 0:
+            self._schedule_action(
+                self._now() + 30, self._lift_temp_ban, mode, label, key, kind, force
+            )
+            return
+        self._track_pending_cmd(cmdid, 0, desc, notify=False)
+        logger.info("Temp ban lifted for %s", label)
+        self._temp_bans.pop(entry_key, None)
+        self._save_temp_bans()
+        safe_call(self._abuse.reset, kind, key)
+
+    def _save_temp_bans(self):
+        try:
+            temp_ban_store.write(self._temp_bans)
+        except Exception:
+            logger.exception("Failed to save temp bans")
+
+    def _forget_temp_ban(self, label: str):
+        """Drop temp bans on ``label`` after an admin lifted them by hand."""
+        target = str(label or "").strip().lower()
+        stale = [k for k, e in self._temp_bans.items() if str(e.get("label", "")).lower() == target]
+        for key in stale:
+            self._temp_bans.pop(key, None)
+        if stale:
+            self._save_temp_bans()
+
+    def _record_abuse(
+        self, kind: str, key: str, user_id: int, ip: str, user: Optional[User] = None
+    ) -> int:
+        """Record an abuse event and return the new stage (0 if none).
+
+        Users whose username or IP is whitelisted are never recorded.
+        """
+        if user is None:
+            user = safe_call(self.getUser, user_id)
+        try:
+            username = from_tt_char(user.szUsername).strip() if user is not None else ""
+            nick = from_tt_char(user.szNickname).strip() if user is not None else ""
+        except Exception:
+            username = nick = ""
+        if self._whitelist.covers(username, ip):
+            return 0
+        self._abuse_subjects[(kind, key)] = {
+            "username": username,
+            "nick": nick or username or f"user {user_id}",
+            "ip": str(ip or ""),
+        }
+        return self._abuse.record(kind, key)
+
+    def _person_abuse_key(self, user: User) -> str:
+        """Abuse key for one person (username + IP), falling back to the IP."""
+        person = self._person_key(user)
+        if person:
+            return f"{person[0]}@{person[1]}"
+        return self._abuse_key(user.nUserID, from_tt_char(user.szIPAddress))
 
     def handle_badword_violation(self, userid: int, ip: str, context: str):
         try:
             key = self._abuse_key(userid, ip)
-            stage = self._abuse.record("badword", key)
+            stage = self._record_abuse("badword", key, userid, ip)
             if stage:
                 reason = f"badwords in {context}"
                 self._handle_abuse_stage("badword", stage, userid, ip, reason, key)
@@ -1922,10 +2369,97 @@ class BotClient(TeamTalk):
         except Exception:
             logger.exception("Failed to process badword violation for user %s", userid)
 
+    # A client joins a channel by itself right after (re)connecting; joins this
+    # soon after the session's login are part of logging in, not hopping.
+    _JOIN_AFTER_LOGIN_GRACE_SEC = 10.0
+    # A login within this long after a logout of the same username+IP (or while
+    # that session is still online) looks like a reconnect after a dropped line.
+    _RECONNECT_WINDOW_SEC = 3.0
+    # Reconnects exempt from login abuse per person and period; beyond that they
+    # count again, so a script cannot hide login spam behind fake reconnects.
+    _RECONNECT_FREE_PER_PERIOD = 5
+    _RECONNECT_PERIOD_SEC = 300.0
+    _MODERATION_HOUSEKEEPING_SEC = 60.0
+
+    def _moderation_housekeeping(self):
+        """Forget bookkeeping for abuse records and reconnects that have expired."""
+        now = self._now()
+        try:
+            tracked = self._abuse.tracked_keys()
+            for key in [k for k in self._abuse_subjects if k not in tracked]:
+                self._abuse_subjects.pop(key, None)
+            # Pending kicks/bans run within seconds, so old marks are useless
+            for key in [k for k, ts in self._forgiven.items() if now - ts > 60]:
+                self._forgiven.pop(key, None)
+            for person in [
+                p
+                for p, times in self._reconnect_history.items()
+                if not times or now - max(times) > self._RECONNECT_PERIOD_SEC
+            ]:
+                self._reconnect_history.pop(person, None)
+        except Exception:
+            logger.exception("Moderation housekeeping failed")
+        finally:
+            self._schedule_action(
+                now + self._MODERATION_HOUSEKEEPING_SEC, self._moderation_housekeeping
+            )
+
+    def _in_login_sync(self) -> bool:
+        """True while the server replays already-online users after our login."""
+        return self._now() < self._login_sync_until
+
+    def _person_key(self, user: User) -> Optional[Tuple[str, str]]:
+        """Identify a person across sessions by (username, IP)."""
+        username = from_tt_char(user.szUsername).strip().lower()
+        ip = from_tt_char(user.szIPAddress).strip()
+        return (username, ip) if username and ip else None
+
+    def _is_reconnect(self, user: User) -> bool:
+        """Whether this login looks like a reconnect after a dropped connection.
+
+        When a connection drops, the server keeps the old session until it
+        times out or the new login replaces it (the old one is logged out just
+        before the new login is announced). So a reconnect arrives while a
+        session with the same username and IP is still online, or right after
+        it left; a deliberate logout/login leaves a gap. Only a limited number
+        of reconnects per period are exempt.
+        """
+        person = self._person_key(user)
+        if person is None:
+            return False
+        now = self._now()
+        recent_logout = now - self._recent_logouts.get(person, 0.0) <= self._RECONNECT_WINDOW_SEC
+        still_online = not recent_logout and any(
+            other.nUserID != user.nUserID and self._person_key(other) == person
+            for other in (safe_call(self.getServerUsers, default=None) or [])
+        )
+        if not (recent_logout or still_online):
+            return False
+        history = [
+            ts
+            for ts in self._reconnect_history.get(person, [])
+            if now - ts <= self._RECONNECT_PERIOD_SEC
+        ]
+        exempt = len(history) < self._RECONNECT_FREE_PER_PERIOD
+        if exempt:
+            history.append(now)
+        self._reconnect_history[person] = history
+        return exempt
+
     def _handle_abuse_login(self, user: User):
+        if not self._feature_on("login") or self._in_login_sync():
+            return
+        if self._is_reconnect(user):
+            logger.info(
+                "Login of user %s treated as reconnect (unstable connection); not counted",
+                user.nUserID,
+            )
+            return
         ip = from_tt_char(user.szIPAddress)
-        key = self._abuse_key(user.nUserID, ip)
-        stage = self._abuse.record("login", key)
+        # Per person, so other people logging in from the same IP (a school
+        # network) do not add to each other's count
+        key = self._person_abuse_key(user)
+        stage = self._record_abuse("login", key, user.nUserID, ip, user)
         if stage:
             self._handle_abuse_stage(
                 "login", stage, user.nUserID, ip, "login abuse", key
@@ -1938,9 +2472,16 @@ class BotClient(TeamTalk):
             )
 
     def _handle_abuse_join(self, user: User):
+        if not self._feature_on("join") or self._in_login_sync():
+            return
+        login_ts = self._session_login_ts.get(user.nUserID)
+        if login_ts is not None and self._now() - login_ts <= self._JOIN_AFTER_LOGIN_GRACE_SEC:
+            return
         ip = from_tt_char(user.szIPAddress)
-        key = self._abuse_key(user.nUserID, ip)
-        stage = self._abuse.record("join", key)
+        # Count per person (username + IP) so a reconnect keeps the count while
+        # other people behind the same IP (e.g. a school network) do not add to it
+        key = self._person_abuse_key(user)
+        stage = self._record_abuse("join", key, user.nUserID, ip, user)
         if stage:
             self._handle_abuse_stage("join", stage, user.nUserID, ip, "join abuse", key)
             logger.warning(
@@ -1949,6 +2490,31 @@ class BotClient(TeamTalk):
                 ip,
                 stage,
             )
+
+    def _handle_abuse_message(self, userid: int, ip: str):
+        if userid == (self.getMyUserID() or 0):
+            return
+        if getattr(config, "ANTISPAM_IGNORE_ADMINS", True):
+            try:
+                u = self.getUser(userid)
+                if u.uUserType & UserType.USERTYPE_ADMIN:
+                    return
+            except Exception:
+                pass
+        try:
+            key = self._abuse_key(userid, ip)
+            stage = self._record_abuse("message", key, userid, ip)
+            if stage:
+                reason = "message spam"
+                self._handle_abuse_stage("message", stage, userid, ip, reason, key)
+                logger.warning(
+                    "Message spam detected (user=%s, ip=%s, stage=%s)",
+                    userid,
+                    ip,
+                    stage,
+                )
+        except Exception:
+            logger.exception("Failed to process message spam violation for user %s", userid)
 
     def _schedule_action(self, when_ts: float, fn, *args, **kwargs):
         try:
@@ -1987,6 +2553,89 @@ class BotClient(TeamTalk):
         except Exception:
             logger.exception("process_scheduled loop failed")
 
+    # A wizard left idle this long is dropped, which also resumes interception
+    # of the user's PMs. Confirmations keep their own 120 s limit.
+    _PROMPT_IDLE_TIMEOUT_SEC = 180.0
+    _PROMPT_CHECK_INTERVAL_SEC = 15.0
+    _CONFIRMATION_TIMEOUT_SEC = 120.0
+
+    def _users_in_prompt(self) -> set:
+        return (
+            set(self._confirmations)
+            | set(self._channel_wizards)
+            | set(self._registration_wizards)
+            | set(self._badword_menus)
+            | set(self._abuse_menus)
+        )
+
+    def _sync_prompt_intercepts(self):
+        """Stop intercepting PMs of users who are answering a bot prompt.
+
+        The TeamTalk client library never fills ``nToUserID`` (the server sends
+        ``destuserid`` but the client reads ``userid``), so an intercepted PM to
+        another user looks exactly like a PM to the bot. While a user answers a
+        wizard or confirmation, interception of that user's PMs is paused, so
+        every PM the bot receives from them really was sent to the bot and
+        chat with other users cannot be taken as an answer. Interception
+        resumes as soon as the prompt ends.
+        """
+        active = self._users_in_prompt()
+        now = self._now()
+        for user_id in active - set(self._prompt_activity):
+            self._prompt_activity[user_id] = now
+            self._subscribe_text_from_user(user_id)
+            logger.debug("PM interception paused for user %s (prompt open)", user_id)
+        for user_id in set(self._prompt_activity) - active:
+            self._prompt_activity.pop(user_id, None)
+            self._subscribe_text_from_user(user_id)
+            logger.debug("PM interception resumed for user %s", user_id)
+
+    def _prompt_housekeeping(self):
+        """Expire abandoned prompts so PM interception does not stay paused."""
+        now = self._now()
+        try:
+            for user_id, pending in list(self._confirmations.items()):
+                if now - pending.get("ts", 0) > self._CONFIRMATION_TIMEOUT_SEC:
+                    self._confirmations.pop(user_id, None)
+                    desc = pending.get("desc", "action")
+                    safe_call(self.send_pm, user_id, f"Confirmation timed out: {desc}")
+            for user_id, last in list(self._prompt_activity.items()):
+                if now - last <= self._PROMPT_IDLE_TIMEOUT_SEC:
+                    continue
+                if self._channel_wizards.pop(user_id, None) is not None:
+                    safe_call(
+                        self.send_pm,
+                        user_id,
+                        "[Create Channel] Timed out due to inactivity. Send /rc again to restart.",
+                    )
+                if user_id in self._registration_wizards:
+                    self._cancel_registration_wizard(user_id, notify=False)
+                    safe_call(
+                        self.send_pm,
+                        user_id,
+                        "[Register] Timed out due to inactivity. Send /ru again to restart.",
+                    )
+                safe_call(
+                    badword_menu.close,
+                    self,
+                    user_id,
+                    "[Badwords] Menu closed due to inactivity. Send /bw to open it again.",
+                )
+                safe_call(
+                    abuse_menu.close,
+                    self,
+                    user_id,
+                    "[Auto-moderation] Menu closed due to inactivity. Send /ab to open it again.",
+                )
+                logger.info("Prompt of user %s expired after inactivity", user_id)
+            self._sync_prompt_intercepts()
+        except Exception:
+            logger.exception("Prompt housekeeping failed")
+        finally:
+            self._schedule_action(
+                now + self._PROMPT_CHECK_INTERVAL_SEC, self._prompt_housekeeping
+            )
+
     def _subscribe_text_from_all(self):
         try:
             users = self.getServerUsers()
@@ -2006,25 +2655,39 @@ class BotClient(TeamTalk):
                 return
             # Always allow direct PMs to bot (for commands)
             subs = Subscription.SUBSCRIBE_USER_MSG
-            types = self._bw_types() if self._bw_enabled() else set()
+            
+            types = set()
+            if self._bw_enabled():
+                types.update(self._bw_types())
+            if self._spam_enabled():
+                spam_types = self._spam_types()
+                types.update(spam_types)
+                
             # Subscribe to additional types only if configured and feature enabled
             if "CHANNEL" in types:
                 subs |= Subscription.SUBSCRIBE_CHANNEL_MSG
                 subs |= Subscription.SUBSCRIBE_INTERCEPT_CHANNEL_MSG
             if "BROADCAST" in types:
                 subs |= Subscription.SUBSCRIBE_BROADCAST_MSG
-            if "PRIVATE" in types:
+            # Not while the user answers a prompt (see _sync_prompt_intercepts)
+            if "PRIVATE" in types and user_id not in self._prompt_activity:
                 subs |= Subscription.SUBSCRIBE_INTERCEPT_USER_MSG
             mask = int(subs)
-            if self._subscription_cache.get(user_id) == mask:
+            cached = self._subscription_cache.get(user_id)
+            if cached == mask:
                 logger.debug("Subscription mask unchanged for user %s", user_id)
                 return
-            cmdid = self.doSubscribe(user_id, subs)
-            if cmdid > 0:
-                self._subscription_cache[user_id] = mask
-                logger.debug(
-                    "Updated subscription for user %s with mask %s", user_id, mask
-                )
+            # doSubscribe only adds flags, so dropped flags need doUnsubscribe
+            removed = (cached or 0) & ~mask
+            if removed and self.doUnsubscribe(user_id, removed) <= 0:
+                return
+            added = mask & ~(cached or 0)
+            if added and self.doSubscribe(user_id, added) <= 0:
+                return
+            self._subscription_cache[user_id] = mask
+            logger.debug(
+                "Updated subscription for user %s with mask %s", user_id, mask
+            )
         except Exception:
             logger.exception("Failed to subscribe to user %s", user_id)
 
@@ -2107,6 +2770,9 @@ class BotClient(TeamTalk):
             )
             return
         path = self._normalize_channel_target_to_path(target)
+        # Check before asking, so only owners/admins can open this prompt
+        if not self._check_delete_channel_allowed(requester_id, path):
+            return
         if not force:
             self._confirmations[requester_id] = {
                 "kind": "delete_channel",
@@ -2126,24 +2792,30 @@ class BotClient(TeamTalk):
             return
         self._perform_delete_channel(requester_id, path)
 
-    def _perform_delete_channel(self, requester_id: int, path: str):
+    def _check_delete_channel_allowed(self, requester_id: int, path: str) -> bool:
         # Authorization: admins can delete any channel; non-admins only their own (based on cache)
+        if self._is_admin(requester_id):
+            return True
         requester_username = self._get_username(requester_id)
-        is_admin = self._is_admin(requester_id)
-        if not is_admin:
-            owner = cache_store.get_owner(path)
-            if not owner or owner != requester_username:
-                self.send_pm(
-                    requester_id,
-                    "You are not the owner of this channel. Deletion denied.",
-                )
-                logger.warning(
-                    "Delete channel denied; requester=%s is not owner (path=%s, owner=%s)",
-                    requester_id,
-                    path,
-                    owner,
-                )
-                return
+        owner = cache_store.get_owner(path)
+        if owner and owner == requester_username:
+            return True
+        self.send_pm(
+            requester_id,
+            "You are not the owner of this channel. Deletion denied.",
+        )
+        logger.warning(
+            "Delete channel denied; requester=%s is not owner (path=%s, owner=%s)",
+            requester_id,
+            path,
+            owner,
+        )
+        return False
+
+    def _perform_delete_channel(self, requester_id: int, path: str):
+        # Re-checked here: ownership may have changed while confirming
+        if not self._check_delete_channel_allowed(requester_id, path):
+            return
 
         cid = self.getChannelIDFromPath(path)
         if not cid or cid <= 0:
@@ -2270,12 +2942,37 @@ class BotClient(TeamTalk):
             username,
         )
 
+    def _hidden_channel_ids(self, channels) -> set:
+        """Return IDs of hidden channels and every channel nested below them."""
+        parents = {ch.nChannelID: ch.nParentID for ch in channels}
+        hidden = {
+            ch.nChannelID
+            for ch in channels
+            if ch.uChannelType & ChannelType.CHANNEL_HIDDEN
+        }
+        result = set()
+        for cid in parents:
+            node, seen = cid, set()
+            while node and node not in seen:
+                if node in hidden:
+                    result.add(cid)
+                    break
+                seen.add(node)
+                node = parents.get(node, 0)
+        return result
+
     def _handle_list_channels(self, requester_id: int, base_path: str):
         try:
             chans = self.getServerChannels()
+            # The bot is an admin and sees hidden channels; regular users must not
+            skip_ids = (
+                set() if self._is_admin(requester_id) else self._hidden_channel_ids(chans)
+            )
             lines = []
             base = (base_path or "").strip("/")
             for ch in chans:
+                if ch.nChannelID in skip_ids:
+                    continue
                 path = self.getChannelPath(ch.nChannelID)
                 # path value might be bytes or str depending on wrapper; ensure str
                 full = str(path)
@@ -2376,16 +3073,48 @@ class BotClient(TeamTalk):
             requester_id,
         )
 
-    def _handle_badword_list(self, requester_id: int):
-        """Send the full badword list to admins."""
+    _BADWORD_ADMIN_COMMANDS = ("/bw", "/bwl", "/bwa", "/bwd", "/bwt")
+    _BADWORD_LIST_HINT = "Delete by number: /bwd 3, /bwd 3,5 or /bwd 3-5."
+
+    def _is_badword_admin_command(self, user_id: int, content: str) -> bool:
+        """Admin badword commands quote badwords on purpose; don't flag them."""
+        parts = (content or "").split(maxsplit=1)
+        if not parts or parts[0].lower() not in self._BADWORD_ADMIN_COMMANDS:
+            return False
+        return self._is_admin(user_id)
+
+    def _handle_badword_list(
+        self, requester_id: int, query: str = "", hint: Optional[str] = None
+    ):
+        """Send a numbered badword list, optionally narrowed by ``query``.
+
+        The entries shown are remembered per admin so /bwd can take numbers
+        that stay valid even if the list changes afterwards.
+        """
         if not self._is_admin(requester_id):
             self.send_pm(requester_id, "Only admins can view badwords.")
             return
-        words = self._badwords.list_words()
+        all_words = self._badwords.list_words()
+        query = (query or "").strip().lower()
+        words = [w for w in all_words if query in w] if query else all_words
+        self._badword_list_snapshots[requester_id] = words
         if not words:
-            self.send_pm(requester_id, "Badword list is empty.")
+            self.send_pm(
+                requester_id,
+                f"No badwords match '{query}'." if query else "Badword list is empty.",
+            )
             return
-        self._send_chunked_lines(requester_id, words, header="[Badwords]")
+        if query:
+            header = f"[Badwords matching '{query}'] {len(words)} of {len(all_words)}"
+        else:
+            header = f"[Badwords] {len(words)} entries"
+        if not self._bw_enabled():
+            header += " (message filter is OFF, see /abt)"
+        lines = [f"{number}. {word}" for number, word in enumerate(words, start=1)]
+        hint = self._BADWORD_LIST_HINT if hint is None else hint
+        if hint:
+            lines.append(hint)
+        self._send_chunked_lines(requester_id, lines, header=header)
         logger.info(
             "Badword list sent to requester=%s (%s entries)", requester_id, len(words)
         )
@@ -2399,28 +3128,92 @@ class BotClient(TeamTalk):
         if not words:
             self.send_pm(requester_id, "Provide at least one word to add.")
             return
+        errors = [err for err in map(self._badwords.pattern_error, words) if err]
         added = self._badwords.add_words(words)
+        valid = {w for w in words if not self._badwords.pattern_error(w)}
+        already = sorted(valid - set(added))
+        lines = []
         if added:
-            self.send_pm(requester_id, f"Added badwords: {', '.join(added)}")
+            lines.append(f"Added badwords: {', '.join(added)}")
             logger.info("Badwords added by requester=%s: %s", requester_id, added)
-        else:
-            self.send_pm(requester_id, "No new badwords were added (already present).")
+        if already:
+            lines.append(f"Already in the list: {', '.join(already)}")
+        lines.extend(f"Not added: {err}" for err in errors)
+        self.send_pm(requester_id, "\n".join(lines))
+
+    def _resolve_list_numbers(
+        self, snapshot: Optional[List[Any]], tokens: List[str], list_command: str
+    ) -> Tuple[List[Any], List[str], List[str]]:
+        """Split ``tokens`` into items picked by number and plain words.
+
+        Numbers and ranges (``3``, ``3-5``) refer to ``snapshot``, the last
+        numbered list shown to the admin. Returns ``(items, words, problems)``.
+        """
+        items: List[Any] = []
+        words: List[str] = []
+        problems: List[str] = []
+        for token in tokens:
+            match = re.fullmatch(r"(\d+)(?:-(\d+))?", token)
+            if not match:
+                words.append(token)
+                continue
+            if snapshot is None:
+                problems.append(f"'{token}': send {list_command} first to see the numbers.")
+                continue
+            first = int(match.group(1))
+            last = int(match.group(2) or first)
+            if first > last:
+                first, last = last, first
+            items.extend(snapshot[max(first, 1) - 1 : min(last, len(snapshot))])
+            if first < 1 or last > len(snapshot):
+                problems.append(
+                    f"'{token}': your last list only has {len(snapshot)} entries."
+                )
+        return items, words, problems
+
+    def _resolve_badword_targets(
+        self, requester_id: int, tokens: List[str]
+    ) -> Tuple[List[str], List[str]]:
+        """Turn list numbers/ranges into entries; return ``(words, problems)``.
+
+        Numbers refer to the last list shown to this admin by /bwl or /bw.
+        """
+        items, words, problems = self._resolve_list_numbers(
+            self._badword_list_snapshots.get(requester_id), tokens, "/bwl"
+        )
+        return items + words, problems
 
     def _handle_badword_delete(self, requester_id: int, csv_words: str):
-        """Remove comma- or space-separated ``csv_words`` from the badword list."""
+        """Remove badwords given as words and/or numbers from the last list."""
         if not self._is_admin(requester_id):
             self.send_pm(requester_id, "Only admins can delete badwords.")
             return
-        words = self._parse_badword_csv(csv_words)
-        if not words:
-            self.send_pm(requester_id, "Provide at least one word to remove.")
+        tokens = self._parse_badword_csv(csv_words)
+        if not tokens:
+            self.send_pm(requester_id, "Provide at least one word or number to remove.")
             return
-        removed = self._badwords.remove_words(words)
+        words, problems = self._resolve_badword_targets(requester_id, tokens)
+        removed = self._badwords.remove_words(words) if words else []
+        missing = sorted(set(words) - set(removed))
+        lines = []
         if removed:
-            self.send_pm(requester_id, f"Removed badwords: {', '.join(removed)}")
+            lines.append(f"Removed badwords: {', '.join(removed)}")
             logger.info("Badwords removed by requester=%s: %s", requester_id, removed)
+        if missing:
+            lines.append(f"Not in the list: {', '.join(missing)}")
+        lines.extend(problems)
+        self.send_pm(requester_id, "\n".join(lines))
+
+    def _handle_badword_test(self, requester_id: int, text: str):
+        """Tell an admin which entries would flag ``text``."""
+        if not self._is_admin(requester_id):
+            self.send_pm(requester_id, "Only admins can test badwords.")
+            return
+        hits = self._badwords.matching_entries(text)
+        if hits:
+            self.send_pm(requester_id, f"Would be flagged by: {', '.join(hits)}")
         else:
-            self.send_pm(requester_id, "No matching badwords were found.")
+            self.send_pm(requester_id, "Not flagged.")
 
     def _handle_version_info(self, requester_id: int):
         """Send runtime version details to the requester."""
@@ -2731,7 +3524,7 @@ class BotClient(TeamTalk):
             self.send_pm(requester_id, "Only admins can issue unban commands.")
             logger.warning("Unban denied; requester=%s not admin", requester_id)
             return
-        mode = str(getattr(config, "BAN_TARGET", "USERNAME")).upper()
+        by_ip = self._ban_target_is_ip()
         vals = [v.strip() for v in (values_csv or "").split(",") if v.strip()]
         if not vals:
             self.send_pm(requester_id, "At least one value is required.")
@@ -2739,7 +3532,7 @@ class BotClient(TeamTalk):
             return
         descs = []
         for v in vals:
-            if mode == "IPADDR":
+            if by_ip:
                 cmdid = self.doUnBanUser(v, 0)
                 if cmdid > 0:
                     self._track_pending_cmd(cmdid, requester_id, f"unban IP '{v}'")
@@ -2758,6 +3551,8 @@ class BotClient(TeamTalk):
                         cmdid, requester_id, f"unban username '{v}'"
                     )
                     descs.append(v)
+        for v in descs:
+            self._forget_temp_ban(v)
         if descs:
             self.send_pm(requester_id, f"Unban scheduled for: {', '.join(descs)}")
             logger.info(
@@ -2768,3 +3563,387 @@ class BotClient(TeamTalk):
             logger.debug(
                 "Unban batch resulted in no actions (requester=%s)", requester_id
             )
+
+    # ============ Feature switch commands (/abt) ============
+    # Abuse kinds whose pending warnings are dropped when a feature is switched off
+    _FEATURE_KINDS = {
+        "login": ("login",),
+        "join": ("join",),
+        "spam": ("message",),
+        "badwords": ("badword",),
+    }
+    _FEATURE_HINT = "Switch with /abt <number or name> [on|off], e.g. /abt 2 off."
+    _ON_WORDS = {"on", "1", "yes", "y", "true", "nyala", "hidup", "aktif"}
+    _OFF_WORDS = {"off", "0", "no", "n", "false", "mati", "nonaktif"}
+
+    def _set_feature(self, name: str, enabled: bool) -> List[str]:
+        """Switch a feature on/off and return notes about side effects.
+
+        Only switches that differ from config.json are stored.
+        """
+        if enabled == self._feature_default(name):
+            self._feature_overrides.pop(name, None)
+        else:
+            self._feature_overrides[name] = enabled
+        try:
+            feature_toggles.write(self._feature_overrides)
+        except Exception:
+            logger.exception("Failed to save feature switches")
+        notes = []
+        if not enabled:
+            # Switching off because of false positives should take effect now:
+            # drop current strikes and cancel kicks/bans that are still pending
+            now = self._now()
+            cleared = 0
+            for kind, key in self._abuse.tracked_keys():
+                if kind in self._FEATURE_KINDS.get(name, ()):
+                    self._abuse.reset(kind, key)
+                    self._forgiven[key] = now
+                    cleared += 1
+            if cleared:
+                notes.append(f"Cleared {cleared} pending warning record(s).")
+        if name in ("spam", "badwords", "pm"):
+            # Which messages the bot intercepts depends on these switches
+            safe_call(self._subscribe_text_from_all)
+        logger.info("Feature '%s' switched %s", name, "on" if enabled else "off")
+        return notes
+
+    def _handle_feature_toggle(
+        self, requester_id: int, args: str, hint: Optional[str] = None
+    ):
+        """/abt lists the switches; /abt <number|name> [on|off] changes one."""
+        if not self._is_admin(requester_id):
+            self.send_pm(requester_id, "Only admins can switch features.")
+            return
+        parts = str(args or "").split()
+        names = [name for name, _desc, _key in self._FEATURES]
+        descriptions = {name: desc for name, desc, _key in self._FEATURES}
+        if not parts or parts[0].lower() in ("list", "ls", "lihat"):
+            lines = []
+            for number, name in enumerate(names, start=1):
+                line = f"{number}. {name} - {descriptions[name]}: {'ON' if self._feature_on(name) else 'OFF'}"
+                if name in self._feature_overrides:
+                    line += f" (config.json: {'ON' if self._feature_default(name) else 'OFF'})"
+                lines.append(line)
+            hint = self._FEATURE_HINT if hint is None else hint
+            if hint:
+                lines.append(hint)
+            self._send_chunked_lines(requester_id, lines, header="[Features]")
+            return
+        target = parts[0].lower()
+        if target.isdigit() and 1 <= int(target) <= len(names):
+            name = names[int(target) - 1]
+        elif target in names:
+            name = target
+        else:
+            self.send_pm(requester_id, f"Unknown feature '{parts[0]}'. Send /abt to see the list.")
+            return
+        current = self._feature_on(name)
+        if len(parts) > 1:
+            word = parts[1].lower()
+            if word in self._ON_WORDS:
+                enabled = True
+            elif word in self._OFF_WORDS:
+                enabled = False
+            else:
+                self.send_pm(requester_id, f"Use on or off, e.g. /abt {name} off.")
+                return
+        else:
+            enabled = not current  # no state given: flip it
+        if enabled == current:
+            self.send_pm(
+                requester_id, f"{descriptions[name]} is already {'ON' if enabled else 'OFF'}."
+            )
+            return
+        notes = self._set_feature(name, enabled)
+        self.send_pm(
+            requester_id,
+            "\n".join([f"{descriptions[name]}: {'ON' if enabled else 'OFF'}"] + notes),
+        )
+
+    # ============ Auto-moderation admin tools (/abs, /abf, /abw, /tb) ============
+    _ABUSE_STATUS_HINT = "Forgive with /abf <number>, e.g. /abf 1."
+    _WHITELIST_HINT = "Add with /abw add <username or IP>; remove with /abw del <number>."
+
+    @staticmethod
+    def _fmt_duration(seconds: float) -> str:
+        seconds = max(0, int(round(seconds)))
+        if seconds < 60:
+            return f"{seconds}s"
+        minutes = -(-seconds // 60)  # round up, so "1m" never means "already over"
+        if minutes < 60:
+            return f"{minutes}m"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+
+    def _abuse_subject_label(self, kind: str, key: str) -> str:
+        subject = self._abuse_subjects.get((kind, key))
+        if not subject:
+            return key
+        name = subject.get("nick") or subject.get("username") or key
+        return f"{name} ({subject['ip']})" if subject.get("ip") else name
+
+    def _handle_abuse_status(self, requester_id: int, hint: Optional[str] = None):
+        """Show escalated users and active temp bans as one numbered list."""
+        if not self._is_admin(requester_id):
+            self.send_pm(requester_id, "Only admins can view auto-moderation status.")
+            return
+        now = self._now()
+        items: List[tuple] = []
+        lines: List[str] = []
+        warnings = self._abuse.active_stages()
+        bans = sorted(self._temp_bans.values(), key=lambda e: e.get("until", 0))
+        if warnings:
+            lines.append("Warnings:")
+            for kind, key, stage, left in warnings:
+                items.append(("warning", kind, key))
+                lines.append(
+                    f"{len(items)}. {self._abuse_subject_label(kind, key)}: "
+                    f"{kind} stage {stage}, clears in {self._fmt_duration(left)}"
+                )
+        if bans:
+            lines.append("Temp bans:")
+            for entry in bans:
+                items.append(("ban", entry["mode"], entry["label"]))
+                target = "IP" if entry["mode"] == "IPADDR" else "user"
+                source = f"by {entry['by']}" if entry.get("by") else "auto"
+                lines.append(
+                    f"{len(items)}. {entry.get('who') or entry['label']} "
+                    f"[{target} {entry['label']}]: {entry.get('reason') or '-'}, {source}, "
+                    f"{self._fmt_duration(entry['until'] - now)} left"
+                )
+        self._abuse_status_snapshots[requester_id] = items
+        if not items:
+            self.send_pm(requester_id, "No active warnings or temp bans.")
+            return
+        hint = self._ABUSE_STATUS_HINT if hint is None else hint
+        if hint:
+            lines.append(hint)
+        self._send_chunked_lines(requester_id, lines, header="[Auto-moderation]")
+
+    def _find_abuse_items(self, name: str) -> List[tuple]:
+        """Warnings and temp bans belonging to a username, nickname or IP."""
+        target = str(name or "").strip().lower()
+        found: List[tuple] = []
+        for kind, key, _stage, _left in self._abuse.active_stages():
+            subject = self._abuse_subjects.get((kind, key), {})
+            candidates = {
+                key.lower(),
+                subject.get("username", "").lower(),
+                subject.get("nick", "").lower(),
+                subject.get("ip", ""),
+            } - {""}
+            if (
+                target in candidates
+                or key.lower().startswith(target + "@")
+                or key.endswith("@" + target)
+            ):
+                found.append(("warning", kind, key))
+        for entry in self._temp_bans.values():
+            candidates = {
+                str(entry.get("label", "")).lower(),
+                str(entry.get("username", "")).lower(),
+                str(entry.get("who", "")).lower(),
+            } - {""}
+            if target in candidates:
+                found.append(("ban", entry["mode"], entry["label"]))
+        return found
+
+    def _handle_abuse_forgive(self, requester_id: int, targets: str):
+        """Clear strikes and lift temp bans picked by number, username or IP."""
+        if not self._is_admin(requester_id):
+            self.send_pm(requester_id, "Only admins can forgive.")
+            return
+        tokens = [t for t in re.split(r"[,\s]+", str(targets or "").strip()) if t]
+        if not tokens:
+            self.send_pm(requester_id, "Provide at least one number, username or IP to forgive.")
+            return
+        items, names, problems = self._resolve_list_numbers(
+            self._abuse_status_snapshots.get(requester_id), tokens, "/abs"
+        )
+        for name in names:
+            found = self._find_abuse_items(name)
+            if found:
+                items.extend(found)
+            else:
+                problems.append(f"Nothing active for '{name}'.")
+        now = self._now()
+        done: List[str] = []
+        for item in dict.fromkeys(items):  # de-duplicate, keep order
+            if item[0] == "warning":
+                _, kind, key = item
+                self._abuse.reset(kind, key)
+                self._forgiven[key] = now
+                done.append(f"{self._abuse_subject_label(kind, key)} ({kind} warning cleared)")
+                continue
+            _, mode, label = item
+            entry = self._temp_bans.get(f"{mode}:{label}")
+            if entry is None:
+                problems.append(f"The temp ban on {label} has already ended.")
+                continue
+            if entry.get("key"):
+                self._forgiven[entry["key"]] = now
+            self._lift_temp_ban(mode, label, entry.get("key", ""), entry.get("kind", ""), True)
+            done.append(f"{entry.get('who') or label} (temp ban on {label} lifted)")
+        lines = []
+        if done:
+            lines.append("Forgiven: " + "; ".join(done))
+            logger.info("Abuse forgiven by requester=%s: %s", requester_id, done)
+        lines.extend(problems)
+        self.send_pm(requester_id, "\n".join(lines) or "Nothing to forgive.")
+
+    def _handle_abuse_whitelist(
+        self, requester_id: int, args: str, hint: Optional[str] = None
+    ):
+        """/abw [list] | /abw add <entries> | /abw del <numbers or entries>."""
+        if not self._is_admin(requester_id):
+            self.send_pm(requester_id, "Only admins can manage the whitelist.")
+            return
+        parts = str(args or "").strip().split(maxsplit=1)
+        action = parts[0].lower() if parts else "list"
+        tokens = [t for t in re.split(r"[,\s]+", parts[1] if len(parts) > 1 else "") if t]
+        hint = self._WHITELIST_HINT if hint is None else hint
+        if action in ("list", "ls", "lihat"):
+            entries = self._whitelist.list_entries()
+            self._whitelist_snapshots[requester_id] = entries
+            if not entries:
+                self.send_pm(requester_id, "Whitelist is empty. " + hint if hint else "Whitelist is empty.")
+                return
+            lines = [f"{n}. {entry}" for n, entry in enumerate(entries, start=1)]
+            if hint:
+                lines.append(hint)
+            self._send_chunked_lines(
+                requester_id, lines, header=f"[Whitelist] {len(entries)} entries"
+            )
+            return
+        if action in ("add", "tambah"):
+            if not tokens:
+                self.send_pm(requester_id, "Format: /abw add <username or IP>[,...]")
+                return
+            added = self._whitelist.add(tokens)
+            already = sorted({t.lower() for t in tokens} - set(added))
+            lines = []
+            if added:
+                lines.append(f"Whitelisted: {', '.join(added)}")
+                logger.info("Whitelist add by requester=%s: %s", requester_id, added)
+            if already:
+                lines.append(f"Already whitelisted: {', '.join(already)}")
+            self.send_pm(requester_id, "\n".join(lines))
+            return
+        if action in ("del", "delete", "remove", "rm", "hapus"):
+            if not tokens:
+                self.send_pm(requester_id, "Format: /abw del <number or entry>[,...]")
+                return
+            items, words, problems = self._resolve_list_numbers(
+                self._whitelist_snapshots.get(requester_id), tokens, "/abw"
+            )
+            targets = list(items) + [w.lower() for w in words]
+            removed = self._whitelist.remove(targets)
+            missing = sorted(set(targets) - set(removed))
+            lines = []
+            if removed:
+                lines.append(f"Removed from whitelist: {', '.join(removed)}")
+                logger.info("Whitelist removal by requester=%s: %s", requester_id, removed)
+            if missing:
+                lines.append(f"Not in the whitelist: {', '.join(missing)}")
+            lines.extend(problems)
+            self.send_pm(requester_id, "\n".join(lines))
+            return
+        self.send_pm(
+            requester_id,
+            "Usage: /abw (list) | /abw add <username or IP> | /abw del <number or entry>",
+        )
+
+    def _handle_temp_ban(
+        self, requester_id: int, names_csv: str, minutes: int, reason: str = ""
+    ):
+        """Ban users by nickname for ``minutes``; the bot lifts the ban itself."""
+        if not self._is_admin(requester_id):
+            self.send_pm(requester_id, "Only admins can issue temporary bans.")
+            return
+        targets = self._find_users_by_nicknames(names_csv)
+        if not targets:
+            self.send_pm(requester_id, "No users match the provided nicknames.")
+            return
+        reason_msg = str(reason or "").strip()
+        delay = 1.0 if reason_msg else 0.05
+        by = self._get_username(requester_id) or str(requester_id)
+        myid = self.getMyUserID() or 0
+        descs = []
+        for u in targets:
+            if u.nUserID == myid:
+                continue
+            nickname = from_tt_char(u.szNickname)
+            if reason_msg:
+                safe_call(
+                    self.send_pm,
+                    u.nUserID,
+                    f"You are temporarily banned for {minutes} minutes: {reason_msg}",
+                )
+            descs.append(nickname)
+            self._schedule_action(
+                self._now() + delay,
+                self._execute_manual_temp_ban,
+                u.nUserID,
+                from_tt_char(u.szIPAddress),
+                from_tt_char(u.szUsername),
+                nickname,
+                int(minutes),
+                reason_msg,
+                requester_id,
+                by,
+            )
+        if descs:
+            self.send_pm(
+                requester_id, f"Temp ban ({minutes} min) scheduled for: {', '.join(descs)}"
+            )
+            logger.info(
+                "Temp ban batch scheduled (requester=%s, targets=%s, minutes=%s)",
+                requester_id,
+                descs,
+                minutes,
+            )
+        else:
+            self.send_pm(requester_id, "No temp bans were scheduled.")
+
+    def _execute_manual_temp_ban(
+        self,
+        user_id: int,
+        ip: str,
+        username: str,
+        nickname: str,
+        minutes: int,
+        reason: str,
+        requester_id: int,
+        by: str,
+    ):
+        key = (
+            f"{username.strip().lower()}@{ip.strip()}"
+            if username and ip
+            else self._abuse_key(user_id, ip)
+        )
+        label = self._apply_temp_ban(
+            user_id,
+            ip,
+            username,
+            minutes,
+            reason or "manual temp ban",
+            key,
+            "manual",
+            who=nickname,
+            by=by,
+            requester=requester_id,
+        )
+        if not label:
+            safe_call(self.send_pm, requester_id, f"Failed to temp ban {nickname}.")
+            return
+        # Disconnect the user once the ban is in place
+        self._schedule_action(
+            self._now() + 0.5,
+            self._execute_manual_kick,
+            user_id,
+            requester_id,
+            nickname,
+            "",
+            False,
+        )

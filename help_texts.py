@@ -12,7 +12,7 @@ HELP_TOPICS = {
         "Flow:\n"
         "- The bot asks for the username (or uses the one you supplied) and checks availability with the server before moving on.\n"
         "- After the username is approved, the bot prompts for password (8-30 chars, must include uppercase, lowercase, and symbol) and your full name.\n"
-        "- Send /cancel at any time to abort the wizard.\n\n"
+        "- Send /cancel at any time to abort the wizard. It also ends by itself after 3 minutes without a reply.\n\n"
         "Example:\n"
         "  /ru alex\n",
     ),
@@ -75,7 +75,7 @@ HELP_TOPICS = {
         "- You choose whether to keep the configured channel defaults (max users, disk quota, flags) or override a subset (max users, no interruptions, classroom, operator receive only, no VOX, no recording).\n"
         "- Audio is always Opus. You can reuse the configured audio defaults or answer a short questionnaire (application, sample rate, mono/stereo, bitrate, VBR, ignore silence/DTX, transmit interval, frame size, fixed audio volume).\n"
         "- Reply with y/n or the menu numbers shown in each step.\n"
-        "- Send /cancel to abort the wizard.\n\n"
+        "- Send /cancel to abort the wizard. It also ends by itself after 3 minutes without a reply.\n\n"
         "Notes:\n"
         "- Channel names must start with a letter or number (no leading symbols) and may not include '/' or '\\\\'.\n"
         "- Channels are always created underneath CREATE_CHANNEL_PARENT_PATH (if set) or otherwise in the root. Users cannot override the parent path.\n"
@@ -121,27 +121,136 @@ HELP_TOPICS = {
         "  /lc\n"
         "  /lc Public/English\n",
     ),
+    "bw": (
+        "Badword Menu (Admin)",
+        "Manage badwords step by step: the bot offers\n"
+        "  1 List, 2 Search, 3 Add, 4 Delete, 5 Test, 6 On/Off (message filter), 0 Done\n"
+        "and asks for what it needs. Reply with the number. Send /cancel (or 0) to close; "
+        "any other command also closes the menu. The menu closes by itself after 3 minutes "
+        "without a reply.\n"
+        "Format:\n"
+        "  /bw\n",
+    ),
     "bwl": (
         "Badword List (Admin)",
-        "Show every badword currently loaded by the bot.\n" "Format:\n" "  /bwl\n",
+        "Show the badwords as a numbered list, optionally only entries containing some text. "
+        "The numbers can be used with /bwd.\n"
+        "Format:\n"
+        "  /bwl [search]\n"
+        "Examples:\n"
+        "  /bwl\n"
+        "  /bwl anj\n",
+    ),
+    "bwt": (
+        "Test Badwords (Admin)",
+        "Check which entries would flag a message, e.g. before adding a wildcard entry "
+        "or to see why someone was warned. Nobody is warned by this test.\n"
+        "Format:\n"
+        "  /bwt <text>\n"
+        "Example:\n"
+        "  /bwt beli anting emas\n",
     ),
     "bwa": (
         "Add Badwords (Admin)",
         "Append one or more badwords to the active list without restarting the bot.\n"
+        "Wildcards: * matches any characters inside one word (including symbols), "
+        "? matches exactly one character. A wildcard entry needs at least 3 letters "
+        "or digits besides * and ?.\n"
+        "Stretched spellings are caught automatically: anjing also catches anjiiiing and annnnjing "
+        "(a letter typed 3 or more times in a row).\n"
         "Format:\n"
         "  /bwa <word[,word2,...]>\n"
         "Examples:\n"
         "  /bwa anjing\n"
-        "  /bwa anjing,goblok,setan\n",
+        "  /bwa anjing,goblok,setan\n"
+        "  /bwa anj*ng   (anjing, anjeng, anjiing, anj*ng, ...)\n"
+        "  /bwa anjing*  (also anjingku, anjingnya)\n",
     ),
     "bwd": (
         "Delete Badwords (Admin)",
-        "Remove one or more badwords from the active list.\n"
+        "Remove one or more badwords, by the numbers from your last /bwl list or by the word itself. "
+        "Numbers keep pointing at the list you heard, even after deleting some entries. "
+        "Type words exactly as /bwl shows them (e.g. /bwd anj*ng).\n"
         "Format:\n"
-        "  /bwd <word[,word2,...]>\n"
+        "  /bwd <number|word[,number2|word2,...]>\n"
         "Examples:\n"
-        "  /bwd anjing\n"
-        "  /bwd anjing,babi,bangsat\n",
+        "  /bwd 3\n"
+        "  /bwd 3,5\n"
+        "  /bwd 3-5\n"
+        "  /bwd anjing,babi\n",
+    ),
+    "ab": (
+        "Auto-moderation Menu (Admin)",
+        "Manage the automatic warnings, kicks and temp bans step by step: the bot offers\n"
+        "  1 Status, 2 Forgive, 3 Whitelist, 4 Temp ban, 5 Features, 0 Done\n"
+        "and asks for what it needs. Send /cancel (or 0) to close; any other command also "
+        "closes the menu. It closes by itself after 3 minutes without a reply.\n"
+        "Format:\n"
+        "  /ab\n",
+    ),
+    "abt": (
+        "Feature Switches (Admin)",
+        "Switch automatic moderation features on or off without restarting:\n"
+        "  1 login    login/logout spam detection\n"
+        "  2 join     channel join/leave spam detection\n"
+        "  3 spam     message spam detection\n"
+        "  4 badwords badword filter for messages\n"
+        "  5 profile  badword check of nicknames and status\n"
+        "  6 pm       checking private messages between users\n"
+        "Defaults come from config.json; a switch changed here is remembered across restarts. "
+        "Switching a feature off also clears its current warnings and cancels kicks/bans that "
+        "were about to happen.\n"
+        "Format:\n"
+        "  /abt                              show the switches\n"
+        "  /abt <number|name> [on|off]       without on/off it flips the switch\n"
+        "Examples:\n"
+        "  /abt join off\n"
+        "  /abt 2\n",
+    ),
+    "abs": (
+        "Auto-moderation Status (Admin)",
+        "Numbered list of everyone who currently has a warning (kind, stage, time until it "
+        "clears) and every active temp ban (reason, who issued it, time left). The numbers "
+        "can be used with /abf.\n"
+        "Format:\n"
+        "  /abs\n",
+    ),
+    "abf": (
+        "Forgive (Admin)",
+        "Clear someone's warnings and cancel a kick or ban that is about to happen; for a "
+        "temp ban, lift it right away. Pick by the numbers from /abs, or by username or IP.\n"
+        "Format:\n"
+        "  /abf <number|username|IP[,...]>\n"
+        "Examples:\n"
+        "  /abf 2\n"
+        "  /abf 1-3\n"
+        "  /abf budi\n"
+        "  /abf 203.0.113.10\n",
+    ),
+    "abw": (
+        "Auto-moderation Whitelist (Admin)",
+        "Usernames or IP addresses that the automatic moderation never warns, kicks or bans "
+        "(spam, join, login and badword checks). Admins can still kick or ban them by hand. "
+        "Prefer usernames: whitelisting a shared IP (e.g. a school network) exempts everyone "
+        "behind it.\n"
+        "Format:\n"
+        "  /abw                      show the numbered list\n"
+        "  /abw add <username|IP>[,...]\n"
+        "  /abw del <number|entry>[,...]\n"
+        "Examples:\n"
+        "  /abw add pakguru\n"
+        "  /abw del 2\n",
+    ),
+    "tb": (
+        "Temporary Ban (Admin)",
+        "Ban users by nickname for a number of minutes (1 to 10080); the bot lifts the ban by "
+        "itself, even after a restart. Uses BAN_TARGET like /bn. With a reason, the user is "
+        "told why before being disconnected. Lift early with /abf.\n"
+        "Format:\n"
+        "  /tb <nickname[,nickname2,...]> <minutes>[|reason]\n"
+        "Examples:\n"
+        "  /tb budi 30\n"
+        "  /tb budi,andi 60|spam PM\n",
     ),
     "oc": (
         "Check Channel Owner",
@@ -191,7 +300,7 @@ def get_general_help() -> str:
         "/rc   Start the channel creation wizard (see /help rc)",
         "/lc   List channels (see /help lc)",
         "/oc   Check channel owner (see /help oc)",
-        "/bwl  Show badwords (admin) | /bwa add | /bwd delete",
+        "/bw   Badword menu (admin) | /bwl list | /bwa add | /bwd delete | /bwt test",
         "/v    Show bot version, runtime OS, and TeamTalk SDK info",
         "",
         "Admin Commands:",
@@ -199,6 +308,8 @@ def get_general_help() -> str:
         "/so, /to           Manage channel ownership (see /help so, /help to)",
         "/kc, /bn, /ubn     Kick/Ban/Unban users (/help kc, /help bn, /help ubn)",
         "/lb, /lu           Ban & account reports (/help lb, /help lu)",
+        "/ab                Auto-moderation menu: /abs status, /abf forgive, /abw whitelist, /tb temp ban",
+        "/abt               Switch moderation features on/off (/help abt)",
         "/cs                Change bot status (/help cs)",
         "",
         "Use /help <code> for detailed instructions. Example: /help ru",

@@ -8,7 +8,7 @@ from typing import Dict
 
 from TeamTalkPy.TeamTalk5 import getVersion
 
-__version__ = "1.0.0"
+__version__ = "1.1.1"
 
 
 def _sdk_version() -> str:

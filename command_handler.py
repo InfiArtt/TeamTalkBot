@@ -99,8 +99,16 @@ def parse_private_command(text: str) -> Optional[Command]:
         path = rest.strip() if rest else ""
         return ("list_channels", {"path": path})
 
-    if cmd == "/bwl":
-        return ("badword_list", {})
+    if cmd == "/bwl":  # optional search text narrows the numbered list
+        return ("badword_list", {"query": rest.strip().lower()})
+
+    if cmd == "/bw":  # interactive badword menu
+        return ("badword_menu", {})
+
+    if cmd == "/bwt":  # test which entries would flag a text
+        if not rest:
+            raise ValueError("Format: /bwt <text to test>")
+        return ("badword_test", {"text": rest})
 
     if cmd == "/bwa":
         if not rest:
@@ -110,9 +118,9 @@ def parse_private_command(text: str) -> Optional[Command]:
             raise ValueError("You must provide at least one word to add.")
         return ("badword_add", {"words": ",".join(words)})
 
-    if cmd == "/bwd":
+    if cmd == "/bwd":  # words and/or numbers from the last /bwl, e.g. 3,5 or 3-5
         if not rest:
-            raise ValueError("Format: /bwd <word[,word2,...]>")
+            raise ValueError("Format: /bwd <number|word[,number2|word2,...]>")
         words = split_badwords(rest)
         if not words:
             raise ValueError("You must provide at least one word to remove.")
@@ -189,6 +197,42 @@ def parse_private_command(text: str) -> Optional[Command]:
 
     if cmd == "/lb":  # list bans
         return ("list_bans", {})
+
+    if cmd == "/ab":  # interactive auto-moderation menu
+        return ("abuse_menu", {})
+
+    if cmd == "/abs":  # auto-moderation status (warnings and temp bans)
+        return ("abuse_status", {})
+
+    if cmd == "/abf":  # forgive: clear strikes / lift temp bans
+        if not rest:
+            raise ValueError("Format: /abf <number|username|IP[,...]>")
+        return ("abuse_forgive", {"targets": rest})
+
+    if cmd == "/abt":  # feature switches: /abt [list] | /abt <number|name> [on|off]
+        return ("feature_toggle", {"args": rest})
+
+    if cmd == "/abw":  # whitelist: /abw [list] | add <entries> | del <numbers|entries>
+        return ("abuse_whitelist", {"args": rest})
+
+    if cmd == "/tb":  # temporary ban: /tb <nick[,nick2]> <minutes>[|reason]
+        usage = "Format: /tb <nickname[,nickname2,...]> <minutes>[|reason]"
+        if not rest:
+            raise ValueError(usage)
+        target_part, reason = (rest.split("|", 1) + [""])[:2]
+        pieces = target_part.strip().rsplit(maxsplit=1)
+        if len(pieces) != 2 or not pieces[1].isdigit():
+            raise ValueError(usage)
+        minutes = int(pieces[1])
+        if not 1 <= minutes <= 10080:
+            raise ValueError("Minutes must be between 1 and 10080 (7 days).")
+        names = [n.strip() for n in pieces[0].split(",") if n.strip()]
+        if not names:
+            raise ValueError(usage)
+        return (
+            "temp_ban",
+            {"names": ",".join(names), "minutes": minutes, "reason": reason.strip()},
+        )
 
     if cmd == "/lu":  # list users
         return ("list_users", {})

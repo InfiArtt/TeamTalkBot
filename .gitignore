@@ -4,3 +4,7 @@ __pycache__/
 *.dat
 /libTeamTalk5.so
 TeamTalk_DLL/
+teamtalk.log
+teamtalk.err
+abuse_whitelist.txt
+TeamTalkPy/

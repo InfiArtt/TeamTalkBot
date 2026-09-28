@@ -25,10 +25,11 @@
   <h2>Quick Start</h2>
   <ol>
     <li>Install Python 3.12+ on the host where the TeamTalk server is reachable.</li>
-    <li>Place <code>libTeamTalk5.so</code> (Linux/WSL) or <code>TeamTalk5.dll</code> (Windows) inside <code>TeamTalk_DLL/</code>.</li>
-    <li>Run the bot once; it will create <code>config.json</code> populated with defaults.</li>
+    <li>Install the TeamTalk 5 SDK (not included; it is licensed separately by BearWare.dk): <pre>python3 tools/download_sdk.py</pre>
+      It installs <code>libTeamTalk5.so</code> next to <code>main.sh</code> (Linux) or <code>TeamTalk5.dll</code> in <code>TeamTalk_DLL/</code> (Windows) plus <code>TeamTalkPy/</code>. Unpacking needs 7-Zip or <code>pip install py7zr</code>. If bearware.dk is unreachable, download the archive by hand and pass it with <code>--archive</code>.</li>
+    <li>Run the bot once (<code>./main.sh</code> on Linux, <code>python main.py</code> on Windows); it will create <code>config.json</code> populated with defaults.</li>
     <li>Edit <code>config.json</code> to provide server credentials, channel defaults, and policies.</li>
-    <li>Run the bot: <pre>python3 main.py</pre></li>
+    <li>Run the bot again: <pre>./main.sh</pre></li>
     <li>Monitor output/logs, then interact with the bot in TeamTalk via private messages.</li>
   </ol>
 
@@ -88,7 +89,10 @@
   <ul>
     <li><code>ABUSE_LOGIN_COUNT</code>, <code>ABUSE_JOIN_COUNT</code>, <code>BADWORD_ABUSE_COUNT</code>: events per key within <code>ABUSE_WINDOW_SEC</code> before escalation.</li>
     <li><code>ABUSE_TEMP_BAN_MINUTES</code>: temporary ban duration at stage 3.</li>
+    <li><code>ABUSE_LOGIN_ENABLED</code> / <code>ABUSE_JOIN_ENABLED</code>: default on/off state of login-spam and join-spam detection (like <code>ANTISPAM_MESSAGE_ENABLED</code> and <code>BADWORDS_ENABLED</code>, admins can override them at runtime with <code>/abt</code>).</li>
+    <li><code>ABUSE_WHITELIST_FILE</code>: file (one username or IP per line) of users the automatic moderation never punishes; managed with <code>/abw</code>. Default <code>abuse_whitelist.txt</code>.</li>
     <li><code>ABUSE_LOGIN_WARNINGS</code>, <code>ABUSE_JOIN_WARNINGS</code>, <code>BADWORDS_WARNINGS</code>: text templates shown at each stage (use <code>{duration}</code> placeholder for minutes).</li>
+    <li><code>BAN_TARGET</code>: sets the target identifier for bans (<code>"IPADDRESS"</code> or <code>"USERNAME"</code>).</li>
   </ul>
   <h3>Badword Enforcement</h3>
   <ul>
@@ -97,6 +101,14 @@
     <li><code>BADWORDS_FILE</code>: UTF-8 file storing one word per line (comma-separated values also supported). The bot writes new words here when admins use <code>/bwa</code>/<code>/bwd</code>.</li>
     <li><code>BADWORDS_IGNORE_ADMINS</code>: skip enforcement for admin users when true.</li>
     <li><code>BADWORDS_PROFILE_CHECK_ENABLED</code>: when true, nicknames/status messages are scanned via <code>moderation_utils.check_user_profile_badwords</code>.</li>
+  </ul>
+  <h3>Message Anti-Spam</h3>
+  <ul>
+    <li><code>ANTISPAM_MESSAGE_ENABLED</code>: master switch to enable rate-limiting of text messages.</li>
+    <li><code>ANTISPAM_MESSAGE_COUNT</code>, <code>ANTISPAM_MESSAGE_WINDOW_SEC</code>: limits the maximum number of messages a user can send within the specified window in seconds before escalating the abuse stage.</li>
+    <li><code>ANTISPAM_INTERCEPT_TYPES</code>: list of message types to rate-limit (<code>"PRIVATE"</code>, <code>"CHANNEL"</code>, <code>"BROADCAST"</code>).</li>
+    <li><code>ANTISPAM_IGNORE_ADMINS</code>: skip anti-spam enforcement for admin users when true.</li>
+    <li><code>ABUSE_MESSAGE_WARNINGS</code>: text templates shown at each stage (use <code>{duration}</code> placeholder for temporary ban minutes).</li>
   </ul>
   <h3>Reconnection &amp; Event Loop</h3>
   <ul>
@@ -129,10 +141,18 @@
       <tr><td><code>/bn &lt;nick[,nick2...]&gt;[|reason]</code></td><td>Ban users. Bot auto-kicks after ban applies.</td><td>&nbsp;</td></tr>
       <tr><td><code>/ubn &lt;value[,value2...]&gt;</code></td><td>Unban (depends on <code>BAN_TARGET</code> config).</td><td>&nbsp;</td></tr>
       <tr><td><code>/lb</code></td><td>List active bans.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/ab</code></td><td>Step-by-step auto-moderation menu: 1 status, 2 forgive, 3 whitelist, 4 temp ban, 0 done.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/abs</code></td><td>Numbered list of current warnings (kind, stage, time until cleared) and temp bans (reason, issuer, time left).</td><td>Admin-only.</td></tr>
+      <tr><td><code>/abf number|username|IP[,...]</code></td><td>Forgive: clear warnings, cancel kicks/bans about to happen, lift temp bans now.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/abw</code>, <code>/abw add x</code>, <code>/abw del n</code></td><td>Whitelist usernames/IPs that automatic moderation never punishes.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/tb nick[,nick2...] minutes[|reason]</code></td><td>Temporary ban (1&ndash;10080 minutes), lifted automatically even after a restart.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/abt [number|name [on|off]]</code></td><td>Switch moderation features on/off: login, join, spam, badwords, profile, pm. Defaults come from <code>config.json</code>; changes are kept in <code>feature_toggles.json</code>. Switching off clears that feature's current warnings.</td><td>Admin-only.</td></tr>
       <tr><td><code>/lu</code></td><td>List registered users.</td><td>Admin-only.</td></tr>
-      <tr><td><code>/bwl</code></td><td>Show all badwords.</td><td>Admin-only.</td></tr>
-      <tr><td><code>/bwa word[,word2...]</code></td><td>Add badwords live without restarting.</td><td>Admin-only.</td></tr>
-      <tr><td><code>/bwd word[,word2...]</code></td><td>Remove badwords.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/bw</code></td><td>Step-by-step menu: 1 list, 2 search, 3 add, 4 delete, 5 test, 0 done. Closes after 3 minutes without a reply.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/bwl [search]</code></td><td>Numbered badword list, optionally only entries containing the search text.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/bwa word[,word2...]</code></td><td>Add badwords live without restarting (wildcards <code>*</code>/<code>?</code> allowed).</td><td>Admin-only.</td></tr>
+      <tr><td><code>/bwd number|word[,...]</code></td><td>Remove badwords by the numbers of your last list (<code>3</code>, <code>3,5</code>, <code>3-5</code>) or by word.</td><td>Admin-only.</td></tr>
+      <tr><td><code>/bwt text</code></td><td>Show which entries would flag the text; nobody is warned.</td><td>Admin-only.</td></tr>
       <tr><td><code>/cs &lt;status&gt;</code></td><td>Change bot status message.</td><td>Admin-only.</td></tr>
       <tr><td><code>/v</code></td><td>Show bot version, OS, and TeamTalk SDK version.</td><td>Admins also see binding/library paths.</td></tr>
       <tr><td><code>/help [topic]</code></td><td>Overview or topic-specific help (topics documented in code).</td><td>&nbsp;</td></tr>
@@ -172,25 +192,52 @@
     Badwords live in the UTF-8 file configured via <code>BADWORDS_FILE</code>. The bot loads the file at startup and
     keeps it in sync whenever <code>/bwa</code> or <code>/bwd</code> is used. Filters operate on channel, broadcast,
     private, and profile text depending on configuration.</p>
+  <p>
+    Entries match whole words, so <code>anjing</code> does not match <code>anjingku</code>. Entries may use wildcards:
+    <code>*</code> matches any characters inside one word (symbols included) and <code>?</code> matches exactly one
+    character. For example <code>anj*ng</code> matches <code>anjing</code>, <code>anjeng</code>, <code>anjiing</code>
+    and the censored spelling <code>anj*ng</code>; <code>anjing*</code> also matches <code>anjingku</code>. A wildcard
+    entry needs at least 3 letters or digits besides <code>*</code> and <code>?</code>; broader entries are rejected by
+    <code>/bwa</code> and ignored when found in the file. Multi-word entries such as <code>orang gila</code> match
+    consecutive words.</p>
+  <p>
+    Stretched spellings are caught without extra entries: a word in which some letter is typed 3 or more times in a
+    row is also compared with repeated letters collapsed, so <code>anjing</code> catches <code>anjiiiing</code> and
+    <code>annnnjing</code>. Ordinary double letters are left alone (<code>cook</code> is not read as <code>cok</code>);
+    a deliberately stretched <code>cooook</code> is. Use <code>/bwt</code> to see which entry flags a text.</p>
 
   <h2>Abuse Tracking</h2>
   <p>
-    The <code>AbuseTracker</code> monitors login/join/badword events per IP or user. Thresholds per kind
+    The <code>AbuseTracker</code> monitors login/join/badword/message events per IP or user. Thresholds and time windows per kind
     are configurable. Each escalation clears the event bucket and steps through warnings,
     kicks, and auto-temp bans as defined in <code>config.py</code>.</p>
+  <p>
+    Unstable connections are not treated as abuse:</p>
+  <ul>
+    <li>Channel joins are counted per person (username + IP), so other people behind the same IP do not add to
+      someone's count, and a join within 10 seconds after a session logs in (the client rejoining its channel after
+      connecting) is not counted.</li>
+    <li>Logins are also counted per person (username + IP), so students logging in from one school network do not add
+      to each other's count.</li>
+    <li>A login that arrives while a session with the same username and IP is still online, or within 3 seconds after
+      it was logged out, is a reconnect after a dropped connection and is not counted as login abuse. At most 5
+      reconnects per person per 5 minutes get this exemption.</li>
+    <li>Users already online when the bot itself logs in are replayed by the server as logins and joins; these are
+      ignored.</li>
+  </ul>
 
   <h2>Running &amp; Deployment</h2>
   <ul>
     <li>Run under a dedicated system user. Consider <code>systemd</code> or a Windows service for production.</li>
     <li>Monitor logs through standard output or redirect to files; logging is configured before bot initialization.</li>
-    <li>On Linux/WSL ensure <code>libTeamTalk5.so</code> is in <code>$PWD</code> or added to <code>LD_LIBRARY_PATH</code>.</li>
+    <li>On Linux/WSL start the bot with <code>main.sh</code>, which adds its folder (where <code>tools/download_sdk.py</code> puts <code>libTeamTalk5.so</code>) to <code>LD_LIBRARY_PATH</code>.</li>
     <li>Use <code>python3 -m compileall</code> or run unit-style smoke tests after refactors to ensure no syntax regressions.</li>
   </ul>
 
   <h2>Maintenance Guidelines</h2>
   <div class="note">
-    <strong>SDK Boundary:</strong> Never edit files inside <code>TeamTalkPy/</code> or <code>TeamTalk_DLL/</code>.
-    Treat them as vendor dependencies.
+    <strong>SDK Boundary:</strong> Never edit or commit <code>TeamTalkPy/</code>, <code>TeamTalk_DLL/</code> or <code>libTeamTalk5.so</code>.
+    They are vendor files installed by <code>tools/download_sdk.py</code>.
   </div>
   <ul>
     <li>All Python files must remain UTF-8 encoded and PEP 8 compliant (use <code>ruff</code> or <code>flake8</code> if desired).</li>
@@ -200,6 +247,21 @@
     <li>Do not share business logic between wizards and command handlers through global state; prefer helper modules.</li>
     <li>Always update <code>__version__</code> in <code>version.py</code> and add release notes to <code>CHANGELOG.md</code>.</li>
   </ul>
+
+  <h2>License</h2>
+  <p>
+    Copyright &copy; 2025-2026 Rexya Muhamad Rizki and contributors. This program is free software under the
+    <a href="../LICENSE">GNU General Public License version 3</a> or (at your option) any later version, and comes
+    WITHOUT ANY WARRANTY.</p>
+  <p>
+    <strong>Additional permission under GNU GPL version 3 section 7:</strong> If you modify this Program, or any
+    covered work, by linking or combining it with the TeamTalk 5 SDK by BearWare.dk (or a modified version of that
+    library), containing parts covered by the terms of the TeamTalk 5 SDK License Agreement, the licensors of this
+    Program grant you additional permission to convey the resulting work.</p>
+  <p>
+    The TeamTalk 5 SDK (<code>TeamTalk_DLL/</code>, <code>libTeamTalk5.so</code>, <code>TeamTalkPy/</code>) is not
+    part of this project and not covered by the GPL; it is licensed by BearWare.dk under the TeamTalk 5 SDK License
+    Agreement.</p>
 
   <h2>Contact</h2>
   <p>
