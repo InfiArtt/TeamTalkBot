@@ -65,6 +65,7 @@ All settings live in `config.json`. Highlights:
 | **Lifecycle** | `CHANNEL_INACTIVITY_TIMEOUT` (`{"value": X, "unit": "days"}`), `CHANNEL_DELETION_WARNING_SECONDS` |
 | **Channel Rules** | `CHANNEL_CREATION_MAX_PER_USER`, limit/block messages, `CHANNEL_CREATION_BLOCKED_USERNAMES` |
 | **Registration** | `REGISTRATION_ALLOWED_USERNAMES`, per-IP limits/messages |
+| **Shared accounts** | `SHARED_ACCOUNTS` – accounts many people log in with (default `tamu`, `murid`, `hadirin`, `osis`, `pemateri`, `f.osis`, `guest`): not deletable via the bot, moderation tells their users apart by nickname + IP, and unless they are admin accounts they cannot create, delete or transfer channels via the bot |
 | **Abuse Throttling** | `ABUSE_LOGIN_ENABLED`, `ABUSE_JOIN_ENABLED`, `ABUSE_LOGIN_COUNT`, `ABUSE_JOIN_COUNT`, `BADWORD_ABUSE_COUNT`, `ABUSE_WINDOW_SEC`, `ABUSE_TEMP_BAN_MINUTES`, `BAN_TARGET`, `ABUSE_WHITELIST_FILE`, warning message arrays |
 | **Message Anti-Spam** | `ANTISPAM_MESSAGE_ENABLED`, `ANTISPAM_MESSAGE_COUNT`, `ANTISPAM_MESSAGE_WINDOW_SEC`, `ANTISPAM_INTERCEPT_TYPES`, `ANTISPAM_IGNORE_ADMINS`, warning message arrays |
 | **Badwords** | `BADWORDS_ENABLED`, `BADWORDS_INTERCEPT_TYPES` (`"PRIVATE"`, `"CHANNEL"`, `"BROADCAST"`), `BADWORDS_FILE`, `BADWORDS_IGNORE_ADMINS`, `BADWORDS_PROFILE_CHECK_ENABLED` |
