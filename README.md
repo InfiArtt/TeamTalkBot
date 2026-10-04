@@ -113,7 +113,7 @@ All wizards support `/cancel` to abort. Output is chunked automatically if respo
 
 ## License
 
-Copyright (C) 2025-2026 Rexya Muhamad Rizki and contributors
+Copyright (C) 2025-2026 Rexya Muhamad Rizki, Rafli and contributors
 
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [`LICENSE`](LICENSE).
 
@@ -125,6 +125,9 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY 
 
 ## Contact
 
-Developed by **Rexya Muhamad Rizki**  
-📧 <rexya2017@gmail.com>  
-🌐 <https://infiartt.ccom>
+Developed by:
+
+- **Rexya Muhamad Rizki** ([@rexya2017](https://github.com/rexya2017)) — 📧 <rexya2017@gmail.com>
+- **Rafli** ([@raf-li](https://github.com/raf-li))
+
+🌐 <https://infiartt.com>

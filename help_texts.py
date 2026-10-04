@@ -293,7 +293,7 @@ def get_general_help() -> str:
     """Return the general help overview text."""
     lines = [
         "Hello! I'm the TeamTalk administration bot that helps with channel creation, user registration, badword moderation, and other admin tasks.",
-        "Developer: Rexya Muhamad Rizki | Contact: rexya2017@gmail.com | Website: https://infiartt.ccom",
+        "Developers: Rexya Muhamad Rizki and Rafli | Contact: rexya2017@gmail.com | Website: https://infiartt.com",
         "",
         "Command Overview:",
         "/ru   Register a new user (see /help ru)",
