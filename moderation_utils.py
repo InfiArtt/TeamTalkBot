@@ -26,9 +26,10 @@ def check_text_badwords(client, textmessage, content=None):
                     return
             except Exception:
                 pass
-        if client._badwords.contains(content):
+        entries = client._badwords.matching_entries(content)
+        if entries:
             ip = client._get_user_ip(from_uid)
-            client.handle_badword_violation(from_uid, ip, "text")
+            client.handle_badword_text(from_uid, ip, content, entries)
     except Exception:
         pass
 

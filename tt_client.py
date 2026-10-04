@@ -12,6 +12,7 @@ from help_texts import get_topic_help
 from badwords import BadWordsFilter
 from abuse_tracker import AbuseTracker
 from abuse_whitelist import AbuseWhitelist
+from ai_review import AIReviewer, INSULT, OK
 import abuse_menu
 import badword_menu
 import feature_toggles
@@ -187,6 +188,13 @@ class BotClient(TeamTalk):
             k: v for k, v in (safe_call(feature_toggles.read, default={}) or {}).items()
             if k in known_features
         }
+        # Second opinion on ambiguous badwords (see ai_review.py and /abt ai)
+        self._ai = AIReviewer(
+            getattr(config, "AI_CLOUDFLARE_ACCOUNT_ID", ""),
+            getattr(config, "AI_CLOUDFLARE_API_TOKEN", ""),
+            getattr(config, "AI_MODEL", ""),
+            float(getattr(config, "AI_TIMEOUT_SEC", 10) or 10),
+        )
         # Init badwords and abuse tracker
         self._badwords = BadWordsFilter()
         try:
@@ -373,6 +381,7 @@ class BotClient(TeamTalk):
         ("badwords", "Badword filter for messages", "BADWORDS_ENABLED"),
         ("profile", "Badword check of nicknames and status", "BADWORDS_PROFILE_CHECK_ENABLED"),
         ("pm", "Check private messages between users", None),
+        ("ai", "AI decides on ambiguous badwords (e.g. anjing as a dog)", "AI_ENABLED"),
     )
     _DEFAULT_BW_TYPES = ["PRIVATE", "CHANNEL", "BROADCAST"]
 
@@ -2352,6 +2361,50 @@ class BotClient(TeamTalk):
             return f"{person[0]}@{person[1]}"
         return self._abuse_key(user.nUserID, from_tt_char(user.szIPAddress))
 
+    def _ai_active(self) -> bool:
+        return self._feature_on("ai") and self._ai.configured
+
+    def _ambiguous_words(self) -> set:
+        values = getattr(config, "AI_AMBIGUOUS_WORDS", []) or []
+        return {str(v).strip().lower() for v in values if str(v).strip()}
+
+    def handle_badword_text(self, userid: int, ip: str, content: str, entries: List[str]):
+        """Count a badword in a message, asking the AI first when every match is ambiguous.
+
+        If the AI cannot be asked or does not answer, the message is not
+        counted: better to miss one curse than warn a student for talking
+        about their dog.
+        """
+        ambiguous = self._ambiguous_words()
+        if self._ai_active() and all(entry in ambiguous for entry in entries):
+            context = {"kind": "violation", "userid": userid, "ip": ip, "entries": list(entries)}
+            if self._ai.submit(content, entries, context):
+                logger.info("AI review requested (user=%s, words=%s)", userid, entries)
+            else:
+                logger.warning("AI review queue full; not counted (user=%s, words=%s)", userid, entries)
+            return
+        self.handle_badword_violation(userid, ip, "text")
+
+    def _process_ai_results(self):
+        """Act on finished AI reviews (runs on the main thread)."""
+        for context, verdict in self._ai.drain():
+            entries = context.get("entries", [])
+            if context.get("kind") == "test":
+                answer = {
+                    INSULT: "AI: insult, so it would be counted.",
+                    OK: "AI: not an insult, so it would not be counted.",
+                }.get(verdict, "AI did not answer, so it would not be counted.")
+                safe_call(self.send_pm, context.get("requester"), answer)
+                continue
+            userid = context.get("userid")
+            if verdict == INSULT:
+                logger.info("AI review: insult (user=%s, words=%s)", userid, entries)
+                self.handle_badword_violation(userid, context.get("ip", ""), "text")
+            elif verdict == OK:
+                logger.info("AI review: not an insult; not counted (user=%s, words=%s)", userid, entries)
+            else:
+                logger.warning("AI review unavailable; not counted (user=%s, words=%s)", userid, entries)
+
     def handle_badword_violation(self, userid: int, ip: str, context: str):
         try:
             key = self._abuse_key(userid, ip)
@@ -2535,6 +2588,7 @@ class BotClient(TeamTalk):
             )
 
     def process_scheduled(self):
+        safe_call(self._process_ai_results)
         try:
             now = self._now()
             while self._scheduled and self._scheduled[0][0] <= now:
@@ -3211,7 +3265,15 @@ class BotClient(TeamTalk):
             return
         hits = self._badwords.matching_entries(text)
         if hits:
-            self.send_pm(requester_id, f"Would be flagged by: {', '.join(hits)}")
+            message = f"Would be flagged by: {', '.join(hits)}"
+            ambiguous = self._ambiguous_words()
+            if self._ai_active() and all(hit in ambiguous for hit in hits):
+                context = {"kind": "test", "requester": requester_id, "entries": hits}
+                if self._ai.submit(text, hits, context):
+                    message += "\nAmbiguous word, asking the AI..."
+                else:
+                    message += "\nAmbiguous word, but the AI is busy: it would not be counted."
+            self.send_pm(requester_id, message)
         else:
             self.send_pm(requester_id, "Not flagged.")
 
@@ -3622,7 +3684,9 @@ class BotClient(TeamTalk):
             lines = []
             for number, name in enumerate(names, start=1):
                 line = f"{number}. {name} - {descriptions[name]}: {'ON' if self._feature_on(name) else 'OFF'}"
-                if name in self._feature_overrides:
+                if name == "ai" and not self._ai.configured:
+                    line += " (not configured in config.json)"
+                elif name in self._feature_overrides:
                     line += f" (config.json: {'ON' if self._feature_default(name) else 'OFF'})"
                 lines.append(line)
             hint = self._FEATURE_HINT if hint is None else hint
@@ -3653,6 +3717,14 @@ class BotClient(TeamTalk):
         if enabled == current:
             self.send_pm(
                 requester_id, f"{descriptions[name]} is already {'ON' if enabled else 'OFF'}."
+            )
+            return
+        if name == "ai" and enabled and not self._ai.configured:
+            # Switched on without credentials, every ambiguous word would go uncounted
+            self.send_pm(
+                requester_id,
+                "The AI is not configured: set AI_CLOUDFLARE_ACCOUNT_ID and "
+                "AI_CLOUDFLARE_API_TOKEN in config.json and restart the bot first.",
             )
             return
         notes = self._set_feature(name, enabled)

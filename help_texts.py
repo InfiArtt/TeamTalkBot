@@ -144,7 +144,8 @@ HELP_TOPICS = {
     "bwt": (
         "Test Badwords (Admin)",
         "Check which entries would flag a message, e.g. before adding a wildcard entry "
-        "or to see why someone was warned. Nobody is warned by this test.\n"
+        "or to see why someone was warned. Nobody is warned by this test. When the AI check "
+        "is on (/abt ai) and only ambiguous words match, the AI's answer follows in a second message.\n"
         "Format:\n"
         "  /bwt <text>\n"
         "Example:\n"
@@ -197,6 +198,7 @@ HELP_TOPICS = {
         "  4 badwords badword filter for messages\n"
         "  5 profile  badword check of nicknames and status\n"
         "  6 pm       checking private messages between users\n"
+        "  7 ai       let an AI decide whether an ambiguous badword (anjing, babi, tahi...) was an insult\n"
         "Defaults come from config.json; a switch changed here is remembered across restarts. "
         "Switching a feature off also clears its current warnings and cancels kicks/bans that "
         "were about to happen.\n"

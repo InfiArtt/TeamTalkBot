@@ -89,6 +89,7 @@
   <ul>
     <li><code>ABUSE_LOGIN_COUNT</code>, <code>ABUSE_JOIN_COUNT</code>, <code>BADWORD_ABUSE_COUNT</code>: events per key within <code>ABUSE_WINDOW_SEC</code> before escalation.</li>
     <li><code>ABUSE_TEMP_BAN_MINUTES</code>: temporary ban duration at stage 3.</li>
+    <li><code>AI_ENABLED</code>, <code>AI_CLOUDFLARE_ACCOUNT_ID</code>, <code>AI_CLOUDFLARE_API_TOKEN</code>, <code>AI_MODEL</code>, <code>AI_TIMEOUT_SEC</code>, <code>AI_AMBIGUOUS_WORDS</code>: optional AI check (Cloudflare Workers AI) that decides whether a message whose only badwords are ambiguous ones (anjing, babi, tahi, ...) was an insult; unanswered checks are not counted. Off by default; switch with <code>/abt ai</code>. Setup: <code>docs/ai.md</code>.</li>
     <li><code>ABUSE_LOGIN_ENABLED</code> / <code>ABUSE_JOIN_ENABLED</code>: default on/off state of login-spam and join-spam detection (like <code>ANTISPAM_MESSAGE_ENABLED</code> and <code>BADWORDS_ENABLED</code>, admins can override them at runtime with <code>/abt</code>).</li>
     <li><code>ABUSE_WHITELIST_FILE</code>: file (one username or IP per line) of users the automatic moderation never punishes; managed with <code>/abw</code>. Default <code>abuse_whitelist.txt</code>.</li>
     <li><code>ABUSE_LOGIN_WARNINGS</code>, <code>ABUSE_JOIN_WARNINGS</code>, <code>BADWORDS_WARNINGS</code>: text templates shown at each stage (use <code>{duration}</code> placeholder for minutes).</li>
