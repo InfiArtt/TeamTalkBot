@@ -2408,11 +2408,27 @@ class BotClient(TeamTalk):
         """True while the server replays already-online users after our login."""
         return self._now() < self._login_sync_until
 
+    def _is_shared_account(self, username: str) -> bool:
+        values = getattr(config, "SHARED_ACCOUNTS", []) or []
+        return str(username or "").strip().lower() in {str(v).strip().lower() for v in values}
+
     def _person_key(self, user: User) -> Optional[Tuple[str, str]]:
-        """Identify a person across sessions by (username, IP)."""
+        """Identify a person across sessions by (username, IP).
+
+        On a shared account (SHARED_ACCOUNTS, e.g. all students on "murid")
+        the username says nothing about who it is, so the nickname is used
+        as well; otherwise everyone on that account behind one IP would count
+        as one person.
+        """
         username = from_tt_char(user.szUsername).strip().lower()
         ip = from_tt_char(user.szIPAddress).strip()
-        return (username, ip) if username and ip else None
+        if not username or not ip:
+            return None
+        if self._is_shared_account(username):
+            nickname = from_tt_char(user.szNickname).strip().lower()
+            if nickname:
+                return (f"{username}/{nickname}", ip)
+        return (username, ip)
 
     def _is_reconnect(self, user: User) -> bool:
         """Whether this login looks like a reconnect after a dropped connection.
@@ -2867,6 +2883,19 @@ class BotClient(TeamTalk):
             self.send_pm(requester_id, "Username must not be empty.")
             logger.warning(
                 "Delete user denied; empty username (requester=%s)", requester_id
+            )
+            return
+        if self._is_shared_account(username):
+            # Deleting it would lock out everyone who logs in with it
+            self.send_pm(
+                requester_id,
+                f"'{username}' is a shared account (SHARED_ACCOUNTS) and cannot be deleted "
+                "via the bot. An admin can still remove it in the TeamTalk client.",
+            )
+            logger.warning(
+                "Delete of shared account refused (requester=%s, target=%s)",
+                requester_id,
+                username,
             )
             return
         allowed_usernames = self._registration_allowed_usernames()

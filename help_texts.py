@@ -107,7 +107,8 @@ HELP_TOPICS = {
         "- Without --force the bot asks for 'y' or 'n'.\n\n"
         "Permissions:\n"
         "- Admins: may delete any username.\n"
-        "- Non-admins: may only delete their own account.\n\n"
+        "- Non-admins: may only delete their own account.\n"
+        "- Shared accounts (e.g. murid, tamu, hadirin, osis) cannot be deleted via the bot.\n\n"
         "Examples:\n"
         "  /du alex\n"
         "  /du alex --force\n",
