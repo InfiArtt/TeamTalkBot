@@ -103,6 +103,12 @@ The bot auto-generates `config.json` on first launch; edit the JSON file afterwa
 
 All wizards support `/cancel` to abort. Output is chunked automatically if responses exceed TeamTalk’s message limit.
 
+## Deployment
+
+Work on a branch and open a pull request into `main`. GitHub Actions checks every pull request, and merging into `main` updates and restarts the bot on the server over SSH (`tools/deploy.sh`). The one-time server and GitHub setup is in [`docs/deploy.md`](docs/deploy.md).
+
+`badwords/default_words.txt` is the shipped badword list; the bot copies it to `badwords/words.txt` on first run, and that copy (with the admins' `/bwa`/`/bwd` edits) stays on the server and out of git.
+
 ## Maintenance Guidelines
 
 - Treat `TeamTalkPy/`, `TeamTalk_DLL/` and `libTeamTalk5.so` as vendor files installed by `tools/download_sdk.py`—do **not** edit or commit them.
@@ -113,7 +119,7 @@ All wizards support `/cancel` to abort. Output is chunked automatically if respo
 
 ## License
 
-Copyright (C) 2025-2026 Rexya Muhamad Rizki and contributors
+Copyright (C) 2025-2026 Rexya Muhamad Rizki, Rafli and contributors
 
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [`LICENSE`](LICENSE).
 
@@ -125,6 +131,9 @@ This program is distributed in the hope that it will be useful, but WITHOUT ANY 
 
 ## Contact
 
-Developed by **Rexya Muhamad Rizki**  
-📧 <rexya2017@gmail.com>  
-🌐 <https://infiartt.ccom>
+Developed by:
+
+- **Rexya Muhamad Rizki** ([@rexya2017](https://github.com/rexya2017)) — 📧 <rexya2017@gmail.com>
+- **Rafli** ([@raf-li](https://github.com/raf-li))
+
+🌐 <https://infiartt.com>

@@ -98,7 +98,7 @@
   <ul>
     <li><code>BADWORDS_ENABLED</code>: master switch.</li>
     <li><code>BADWORDS_INTERCEPT_TYPES</code>: list of message types to inspect (<code>"PRIVATE"</code>, <code>"CHANNEL"</code>, <code>"BROADCAST"</code>). Include entries to enable inspection of those scopes.</li>
-    <li><code>BADWORDS_FILE</code>: UTF-8 file storing one word per line (comma-separated values also supported). The bot writes new words here when admins use <code>/bwa</code>/<code>/bwd</code>.</li>
+    <li><code>BADWORDS_FILE</code>: UTF-8 file storing one word per line (comma-separated values also supported). The bot writes new words here when admins use <code>/bwa</code>/<code>/bwd</code>. If it does not exist, the bot starts it as a copy of <code>default_words.txt</code> from the same folder (the list shipped in git); the file itself is git-ignored so updates never overwrite the admins' edits.</li>
     <li><code>BADWORDS_IGNORE_ADMINS</code>: skip enforcement for admin users when true.</li>
     <li><code>BADWORDS_PROFILE_CHECK_ENABLED</code>: when true, nicknames/status messages are scanned via <code>moderation_utils.check_user_profile_badwords</code>.</li>
   </ul>
@@ -250,7 +250,7 @@
 
   <h2>License</h2>
   <p>
-    Copyright &copy; 2025-2026 Rexya Muhamad Rizki and contributors. This program is free software under the
+    Copyright &copy; 2025-2026 Rexya Muhamad Rizki, Rafli and contributors. This program is free software under the
     <a href="../LICENSE">GNU General Public License version 3</a> or (at your option) any later version, and comes
     WITHOUT ANY WARRANTY.</p>
   <p>
@@ -265,7 +265,8 @@
 
   <h2>Contact</h2>
   <p>
-    Developed by <strong>Rexya Muhamad Rizki</strong> — <a href="mailto:rexya2017@gmail.com">rexya2017@gmail.com</a> — <a href="https://infiartt.ccom" target="_blank" rel="noopener">https://infiartt.ccom</a>
+    Developed by <strong>Rexya Muhamad Rizki</strong> (<a href="https://github.com/rexya2017" target="_blank" rel="noopener">@rexya2017</a>, <a href="mailto:rexya2017@gmail.com">rexya2017@gmail.com</a>)
+    and <strong>Rafli</strong> (<a href="https://github.com/raf-li" target="_blank" rel="noopener">@raf-li</a>) — <a href="https://infiartt.com" target="_blank" rel="noopener">https://infiartt.com</a>
   </p>
 </body>
 </html>

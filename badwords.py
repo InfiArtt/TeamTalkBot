@@ -3,11 +3,14 @@
 import logging
 import os
 import re
+import shutil
 from fnmatch import fnmatchcase
 from typing import Callable, Dict, Iterable, Iterator, Set, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Shipped list (tracked by git) used to seed the runtime list on first run
+DEFAULT_LIST_NAME = "default_words.txt"
 # Wildcards usable in entries: * = any characters within a word, ? = one character
 WILDCARDS = "*?"
 # Letters/digits a wildcard entry must contain, so entries like "*" or "a*"
@@ -51,12 +54,21 @@ class BadWordsFilter:
         return self._file_path
 
     def load_file(self, path: str) -> None:
-        """Load badwords from ``path`` and ensure the file exists on disk."""
+        """Load badwords from ``path`` and ensure the file exists on disk.
+
+        The file holds the admins' /bwa and /bwd edits and is not tracked by
+        git; on first run it starts as a copy of ``default_words.txt`` from
+        the same folder (the list shipped with the bot).
+        """
         ap = os.path.abspath(path or "badwords/words.txt")
         os.makedirs(os.path.dirname(ap), exist_ok=True)
         if not os.path.exists(ap):
-            with open(ap, "w", encoding="utf-8") as file_handle:
-                file_handle.write("")
+            default = os.path.join(os.path.dirname(ap), DEFAULT_LIST_NAME)
+            if os.path.exists(default) and os.path.abspath(default) != ap:
+                shutil.copyfile(default, ap)
+            else:
+                with open(ap, "w", encoding="utf-8") as file_handle:
+                    file_handle.write("")
         self._file_path = ap
         self._words.clear()
         try:
