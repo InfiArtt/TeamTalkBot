@@ -8,6 +8,10 @@ The format is based on [Semantic Versioning](https://semver.org/).
 ### Added
 - GitHub Actions workflow (`.github/workflows/deploy.yml`): pull requests into `main` are checked (all Python files must compile), and merging into `main` updates and restarts the bot on the server over SSH through `tools/deploy.sh`, using a key that can only run that script. Setup: `docs/deploy.md`.
 
+### Fixed
+- Anyone logged in with a shared account (e.g. `murid`) could delete that account for everyone with `/du murid` + `y`, because the bot treated it as deleting their own account. Accounts listed in the new `SHARED_ACCOUNTS` setting (default `tamu`, `murid`, `hadirin`, `osis`, `guest`) cannot be deleted via the bot, not even by admins.
+- Join/login spam detection counted everyone on a shared account behind one IP (all students on `murid` from the school network) as one person. For shared accounts it now tells people apart by nickname + IP.
+
 ### Changed
 - The shipped badword list is now `badwords/default_words.txt`; `badwords/words.txt` (with the admins' `/bwa`/`/bwd` edits) is git-ignored and created from the default list on first run, so updates no longer conflict with or overwrite those edits.
 - `TeamTalkBot.service` is a template for a non-root account and logs to the journal.
