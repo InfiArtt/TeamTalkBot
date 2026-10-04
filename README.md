@@ -65,7 +65,7 @@ All settings live in `config.json`. Highlights:
 | **Lifecycle** | `CHANNEL_INACTIVITY_TIMEOUT` (`{"value": X, "unit": "days"}`), `CHANNEL_DELETION_WARNING_SECONDS` |
 | **Channel Rules** | `CHANNEL_CREATION_MAX_PER_USER`, limit/block messages, `CHANNEL_CREATION_BLOCKED_USERNAMES` |
 | **Registration** | `REGISTRATION_ALLOWED_USERNAMES`, per-IP limits/messages |
-| **AI context check** | `AI_ENABLED`, `AI_CLOUDFLARE_ACCOUNT_ID`, `AI_CLOUDFLARE_API_TOKEN`, `AI_MODEL`, `AI_TIMEOUT_SEC`, `AI_AMBIGUOUS_WORDS` (see [`docs/ai.md`](docs/ai.md)) |
+| **AI context check** | `AI_ENABLED`, `AI_CLOUDFLARE_ACCOUNT_ID`, `AI_CLOUDFLARE_API_TOKEN`, `AI_MODEL`, `AI_TIMEOUT_SEC`, `AI_CONTEXT_MESSAGES`, `AI_AMBIGUOUS_WORDS` (see [`docs/ai.md`](docs/ai.md)) |
 | **Abuse Throttling** | `ABUSE_LOGIN_ENABLED`, `ABUSE_JOIN_ENABLED`, `ABUSE_LOGIN_COUNT`, `ABUSE_JOIN_COUNT`, `BADWORD_ABUSE_COUNT`, `ABUSE_WINDOW_SEC`, `ABUSE_TEMP_BAN_MINUTES`, `BAN_TARGET`, `ABUSE_WHITELIST_FILE`, warning message arrays |
 | **Message Anti-Spam** | `ANTISPAM_MESSAGE_ENABLED`, `ANTISPAM_MESSAGE_COUNT`, `ANTISPAM_MESSAGE_WINDOW_SEC`, `ANTISPAM_INTERCEPT_TYPES`, `ANTISPAM_IGNORE_ADMINS`, warning message arrays |
 | **Badwords** | `BADWORDS_ENABLED`, `BADWORDS_INTERCEPT_TYPES` (`"PRIVATE"`, `"CHANNEL"`, `"BROADCAST"`), `BADWORDS_FILE`, `BADWORDS_IGNORE_ADMINS`, `BADWORDS_PROFILE_CHECK_ENABLED` |
@@ -106,7 +106,7 @@ All wizards support `/cancel` to abort. Output is chunked automatically if respo
 
 ## AI context check
 
-Optionally, an AI model on Cloudflare Workers AI decides whether an ambiguous badword was meant as an insult ("anjing tetanggaku berisik" is about a dog, "anjing lah" is a curse). Only messages whose matches are all ambiguous are sent, without names or IPs; if the AI does not answer, the message is not counted. Setup and evaluation: [`docs/ai.md`](docs/ai.md). Switch: `/abt ai`.
+Optionally, an AI model on Cloudflare Workers AI decides whether an ambiguous badword was meant as an insult ("anjing tetanggaku berisik" is about a dog, "anjing lah" is a curse). Only messages whose matches are all ambiguous are sent, with a few surrounding messages as context (so a lone "anjing" after "aku punya binatang baru" is understood), without names or IPs; if the AI does not answer, the message is not counted. Setup and evaluation: [`docs/ai.md`](docs/ai.md). Switch: `/abt ai`.
 
 ## Deployment
 

@@ -12,7 +12,8 @@ from help_texts import get_topic_help
 from badwords import BadWordsFilter
 from abuse_tracker import AbuseTracker
 from abuse_whitelist import AbuseWhitelist
-from ai_review import AIReviewer, INSULT, OK
+from ai_review import AIReviewer, INSULT, OK, OTHER, SAME
+from collections import deque
 import abuse_menu
 import badword_menu
 import feature_toggles
@@ -195,6 +196,12 @@ class BotClient(TeamTalk):
             getattr(config, "AI_MODEL", ""),
             float(getattr(config, "AI_TIMEOUT_SEC", 10) or 10),
         )
+        # Recent messages per conversation, kept in memory only while the AI
+        # check is on, as context ("aku punya binatang baru" ... "anjing")
+        self._recent_messages: Dict[tuple, deque] = {}
+        self._message_seq = 0
+        # (conversation, seq) of the message being handled right now
+        self._current_message: Optional[Tuple[tuple, int]] = None
         # Init badwords and abuse tracker
         self._badwords = BadWordsFilter()
         try:
@@ -665,6 +672,7 @@ class BotClient(TeamTalk):
         self._prompt_activity.clear()
         self._session_login_ts.clear()
         self._recent_logouts.clear()
+        self._recent_messages.clear()
         self._bot_user_id = 0
         logger.info("Cleared all pending states and wizard sessions.")
 
@@ -909,6 +917,7 @@ class BotClient(TeamTalk):
             if message_text is None:
                 return
             from_uid = textmessage.nFromUserID
+            self._current_message = self._remember_message(textmessage, message_text)
             # Filter bad words in channel / broadcast messages if configured
             if textmessage.nMsgType != TextMsgType.MSGTYPE_USER:
                 if self._bw_enabled():
@@ -1098,6 +1107,7 @@ class BotClient(TeamTalk):
             # Report errors to the sender without exposing the traceback
             safe_call(self.send_pm, textmessage.nFromUserID, f"An error occurred: {e}")
         finally:
+            self._current_message = None
             # The message may have opened or closed a prompt
             safe_call(self._sync_prompt_intercepts)
 
@@ -2368,6 +2378,65 @@ class BotClient(TeamTalk):
         values = getattr(config, "AI_AMBIGUOUS_WORDS", []) or []
         return {str(v).strip().lower() for v in values if str(v).strip()}
 
+    # Context for the AI: messages this old or newer, and a short wait so a
+    # follow-up ("anjing" ... "lucu banget, baru lahir") is included too
+    _AI_CONTEXT_WINDOW_SEC = 120.0
+    _AI_CONTEXT_WAIT_SEC = 8.0
+    _AI_CONTEXT_AFTER = 2
+
+    def _ai_context_size(self) -> int:
+        try:
+            return max(0, int(getattr(config, "AI_CONTEXT_MESSAGES", 4) or 0))
+        except Exception:
+            return 0
+
+    def _remember_message(self, textmessage, text: str) -> Optional[Tuple[tuple, int]]:
+        """Keep a message in memory as AI context; returns (conversation, seq).
+
+        Channel messages are grouped per channel (everyone in it); private
+        messages per sender, since the SDK does not say who they were for.
+        """
+        if not self._ai_active() or self._ai_context_size() <= 0:
+            return None
+        if textmessage.nMsgType == TextMsgType.MSGTYPE_CHANNEL:
+            key = ("channel", int(textmessage.nChannelID))
+        elif textmessage.nMsgType == TextMsgType.MSGTYPE_USER:
+            key = ("pm", int(textmessage.nFromUserID))
+        else:
+            return None
+        uid = int(textmessage.nFromUserID)
+        stripped = (text or "").strip()
+        # Never keep commands or answers to the bot's prompts (e.g. passwords)
+        if (
+            not stripped
+            or stripped.startswith("/")
+            or uid == (self.getMyUserID() or 0)
+            or uid in self._users_in_prompt()
+        ):
+            return None
+        self._message_seq += 1
+        self._recent_messages.setdefault(key, deque(maxlen=12)).append(
+            (self._message_seq, self._now(), uid, stripped)
+        )
+        return key, self._message_seq
+
+    def _conversation_around(self, current: Tuple[tuple, int], userid: int):
+        """(before, after) messages around ``current`` as (speaker, text) pairs."""
+        key, seq = current
+        items = list(self._recent_messages.get(key, ()))
+        flagged_ts = next((ts for s, ts, _uid, _text in items if s == seq), self._now())
+
+        def speaker(uid):
+            return SAME if uid == userid else OTHER
+
+        before = [
+            (speaker(uid), text)
+            for s, ts, uid, text in items
+            if s < seq and flagged_ts - ts <= self._AI_CONTEXT_WINDOW_SEC
+        ][-self._ai_context_size():]
+        after = [(speaker(uid), text) for s, _ts, uid, text in items if s > seq]
+        return before, after[: self._AI_CONTEXT_AFTER]
+
     def handle_badword_text(self, userid: int, ip: str, content: str, entries: List[str]):
         """Count a badword in a message, asking the AI first when every match is ambiguous.
 
@@ -2378,12 +2447,36 @@ class BotClient(TeamTalk):
         ambiguous = self._ambiguous_words()
         if self._ai_active() and all(entry in ambiguous for entry in entries):
             context = {"kind": "violation", "userid": userid, "ip": ip, "entries": list(entries)}
-            if self._ai.submit(content, entries, context):
-                logger.info("AI review requested (user=%s, words=%s)", userid, entries)
+            current = self._current_message
+            if current:
+                self._schedule_action(
+                    self._now() + self._AI_CONTEXT_WAIT_SEC,
+                    self._submit_ai_review,
+                    content,
+                    list(entries),
+                    context,
+                    current,
+                )
             else:
-                logger.warning("AI review queue full; not counted (user=%s, words=%s)", userid, entries)
+                self._submit_ai_review(content, list(entries), context, None)
             return
         self.handle_badword_violation(userid, ip, "text")
+
+    def _submit_ai_review(self, content: str, entries: List[str], context: dict, current):
+        before, after = (
+            self._conversation_around(current, context["userid"]) if current else ([], [])
+        )
+        userid = context["userid"]
+        if self._ai.submit(content, entries, context, before, after):
+            logger.info(
+                "AI review requested (user=%s, words=%s, context: %s before, %s after)",
+                userid,
+                entries,
+                len(before),
+                len(after),
+            )
+        else:
+            logger.warning("AI review queue full; not counted (user=%s, words=%s)", userid, entries)
 
     def _process_ai_results(self):
         """Act on finished AI reviews (runs on the main thread)."""
@@ -2450,6 +2543,12 @@ class BotClient(TeamTalk):
                 if not times or now - max(times) > self._RECONNECT_PERIOD_SEC
             ]:
                 self._reconnect_history.pop(person, None)
+            # AI context older than the window is never used again
+            for key, buf in list(self._recent_messages.items()):
+                while buf and now - buf[0][1] > self._AI_CONTEXT_WINDOW_SEC + self._AI_CONTEXT_WAIT_SEC:
+                    buf.popleft()
+                if not buf:
+                    self._recent_messages.pop(key, None)
         except Exception:
             logger.exception("Moderation housekeeping failed")
         finally:
@@ -3667,6 +3766,8 @@ class BotClient(TeamTalk):
         if name in ("spam", "badwords", "pm"):
             # Which messages the bot intercepts depends on these switches
             safe_call(self._subscribe_text_from_all)
+        if name == "ai" and not enabled:
+            self._recent_messages.clear()  # context is only kept while the AI is on
         logger.info("Feature '%s' switched %s", name, "on" if enabled else "off")
         return notes
 

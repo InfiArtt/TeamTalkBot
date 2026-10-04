@@ -20,10 +20,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import config  # noqa: E402
-from ai_review import AIReviewer, INSULT, OK  # noqa: E402
+from ai_review import AIReviewer, INSULT, OK, OTHER, SAME  # noqa: E402
 
-# (message, flagged word, expected verdict); kept apart from the prompt's examples
+# (message, flagged word, expected verdict[, earlier messages]); kept apart from
+# the prompt's examples
 CASES = [
+    ("anjing", "anjing", OK, [(SAME, "aku baru adopsi binatang, coba tebak apa")]),
+    ("anjing", "anjing", OK, [(OTHER, "peliharaan kamu apa?")]),
+    ("babi", "babi", OK, [(OTHER, "kamu ga makan daging apa?")]),
+    ("anjing", "anjing", INSULT, [(SAME, "wifi sekolah mati lagi")]),
+    ("anjing!!", "anjing", INSULT, []),
+    ("babi", "babi", INSULT, [(OTHER, "makanan lu udah gue habisin ya")]),
     ("kemarin aku digigit anjing waktu pulang sekolah", "anjing", OK),
     ("anjing pemandu bisa bantu teman tunanetra jalan", "anjing", OK),
     ("aku alergi bulu anjing", "anjing", OK),
@@ -76,13 +83,18 @@ def main() -> None:
 
     correct = missed = false_alarms = errors = 0
     times = []
-    for text, word, expected in CASES:
+    for text, word, expected, *rest in CASES:
+        before = rest[0] if rest else []
+        if before:
+            text_label = " / ".join(msg for _who, msg in before) + " -> " + text
+        else:
+            text_label = text
         start = time.monotonic()
         try:
-            verdict = reviewer.classify(text, [word])
+            verdict = reviewer.classify(text, [word], before)
         except Exception as exc:
             errors += 1
-            print(f"ERROR  {text!r}: {exc}")
+            print(f"ERROR  {text_label!r}: {exc}")
             continue
         times.append(time.monotonic() - start)
         if verdict == expected:
@@ -90,10 +102,10 @@ def main() -> None:
             continue
         if expected == INSULT:
             missed += 1
-            print(f"MISSED insult      {text!r} (AI said ok)")
+            print(f"MISSED insult      {text_label!r} (AI said ok)")
         else:
             false_alarms += 1
-            print(f"FALSE alarm        {text!r} (AI said insult)")
+            print(f"FALSE alarm        {text_label!r} (AI said insult)")
 
     answered = len(CASES) - errors
     print(

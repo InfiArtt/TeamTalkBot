@@ -125,6 +125,8 @@ AI_CLOUDFLARE_ACCOUNT_ID: str = ""
 AI_CLOUDFLARE_API_TOKEN: str = ""
 AI_MODEL: str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 AI_TIMEOUT_SEC: int = 10
+# Earlier messages from the same conversation sent along as context (0 = none)
+AI_CONTEXT_MESSAGES: int = 4
 # Badword entries with an ordinary meaning too; when every match in a message
 # is one of these, the AI decides whether it was an insult
 AI_AMBIGUOUS_WORDS: List[str] = [
@@ -209,6 +211,7 @@ DEFAULTS: Dict[str, Any] = {
     "AI_CLOUDFLARE_API_TOKEN": AI_CLOUDFLARE_API_TOKEN,
     "AI_MODEL": AI_MODEL,
     "AI_TIMEOUT_SEC": AI_TIMEOUT_SEC,
+    "AI_CONTEXT_MESSAGES": AI_CONTEXT_MESSAGES,
     "AI_AMBIGUOUS_WORDS": AI_AMBIGUOUS_WORDS,
     "ANTISPAM_MESSAGE_ENABLED": ANTISPAM_MESSAGE_ENABLED,
     "ANTISPAM_MESSAGE_COUNT": ANTISPAM_MESSAGE_COUNT,
