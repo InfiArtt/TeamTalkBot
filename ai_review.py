@@ -63,6 +63,20 @@ def format_message(text: str, before=(), after=()) -> str:
     return "\n".join(lines)
 
 
+def call_workers_ai(
+    api_url: str, account: str, token: str, model: str, body: Dict[str, Any], timeout: float
+) -> Dict[str, Any]:
+    """POST ``body`` to a Workers AI model and return the decoded JSON reply."""
+    request = urllib.request.Request(
+        api_url.format(account=account, model=model),
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def parse_verdict(payload: Dict[str, Any]) -> str:
     """Extract INSULT or OK from a Workers AI response; raise if it has neither."""
     if not payload.get("success", True):
@@ -165,16 +179,12 @@ class AIReviewer:
             messages.append({"role": "user", "content": format_message(example, ex_before, ex_after)})
             messages.append({"role": "assistant", "content": json.dumps({"verdict": verdict})})
         messages.append({"role": "user", "content": format_message(text, before, after)})
-        body = json.dumps({"messages": messages, "max_tokens": 20, "temperature": 0})
-        request = urllib.request.Request(
-            self._api_url.format(account=self._account_id, model=self.model),
-            data=body.encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self._api_token}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        payload = call_workers_ai(
+            self._api_url,
+            self._account_id,
+            self._api_token,
+            self.model,
+            {"messages": messages, "max_tokens": 20, "temperature": 0},
+            self._timeout,
         )
-        with urllib.request.urlopen(request, timeout=self._timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
         return parse_verdict(payload)
