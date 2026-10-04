@@ -90,8 +90,11 @@ CHANNEL_CREATION_BLOCKED_MESSAGE: str = "You are not permitted to create channel
 REGISTRATION_ALLOWED_USERNAMES: List[str] = ["guest"]
 REGISTRATION_NOT_ALLOWED_MESSAGE: str = "You already have a registered account and do not need to register again."
 # Accounts that many people log in with. They cannot be deleted via the bot,
-# and moderation tells their users apart by nickname + IP instead of username.
-SHARED_ACCOUNTS: List[str] = ["tamu", "murid", "hadirin", "osis", "guest"]
+# moderation tells their users apart by nickname + IP instead of username, and
+# (unless they are admin accounts) they cannot create or manage channels.
+SHARED_ACCOUNTS: List[str] = [
+    "tamu", "murid", "hadirin", "osis", "pemateri", "f.osis", "guest",
+]
 REGISTRATION_IP_LIMIT: int = 1
 REGISTRATION_IP_WINDOW_MINUTES: int = 2880
 REGISTRATION_IP_LIMIT_MESSAGE: str = "Account creation failed: your IP has reached the registration limit. Please try again later."

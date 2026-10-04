@@ -11,6 +11,7 @@ The format is based on [Semantic Versioning](https://semver.org/).
 ### Fixed
 - Anyone logged in with a shared account (e.g. `murid`) could delete that account for everyone with `/du murid` + `y`, because the bot treated it as deleting their own account. Accounts listed in the new `SHARED_ACCOUNTS` setting (default `tamu`, `murid`, `hadirin`, `osis`, `guest`) cannot be deleted via the bot, not even by admins.
 - Join/login spam detection counted everyone on a shared account behind one IP (all students on `murid` from the school network) as one person. For shared accounts it now tells people apart by nickname + IP.
+- Channels created by a shared account (owned by e.g. `murid`) could be deleted or given away by anyone on that account. Non-admin shared accounts can no longer create, delete or transfer channels via the bot; admin accounts (`pemateri`, `F.OSIS`) keep their admin rights. `pemateri` and `f.osis` are in the default `SHARED_ACCOUNTS`.
 
 ### Changed
 - The shipped badword list is now `badwords/default_words.txt`; `badwords/words.txt` (with the admins' `/bwa`/`/bwd` edits) is git-ignored and created from the default list on first run, so updates no longer conflict with or overwrite those edits.

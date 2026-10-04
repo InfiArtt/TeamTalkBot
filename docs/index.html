@@ -81,7 +81,7 @@
   </ul>
   <h3>Registration Policy</h3>
   <ul>
-    <li><code>SHARED_ACCOUNTS</code>: accounts that many people log in with (default <code>tamu</code>, <code>murid</code>, <code>hadirin</code>, <code>osis</code>, <code>guest</code>). They cannot be deleted via the bot (<code>/du</code>), even by admins, and join/login spam detection tells their users apart by nickname + IP instead of username. Add shared admin accounts too if several people use them.</li>
+    <li><code>SHARED_ACCOUNTS</code>: accounts that many people log in with (default <code>tamu</code>, <code>murid</code>, <code>hadirin</code>, <code>osis</code>, <code>pemateri</code>, <code>f.osis</code>, <code>guest</code>). They cannot be deleted via the bot (<code>/du</code>), even by admins, and join/login spam detection tells their users apart by nickname + IP instead of username. Non-admin shared accounts cannot create, delete or transfer channels via the bot (a channel owned by <code>murid</code> would belong to every student); admin accounts keep their admin rights.</li>
     <li><code>REGISTRATION_ALLOWED_USERNAMES</code>: usernames (case-insensitive) that may request new accounts. Typically <code>["guest"]</code> to limit spammers.</li>
     <li><code>REGISTRATION_NOT_ALLOWED_MESSAGE</code>: text sent when disallowed users attempt registration.</li>
     <li><code>REGISTRATION_IP_LIMIT</code>, <code>REGISTRATION_IP_WINDOW_MINUTES</code>, <code>REGISTRATION_IP_LIMIT_MESSAGE</code>: per-IP quota, window length, and message when quota is exceeded.</li>

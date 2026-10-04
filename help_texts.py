@@ -67,7 +67,8 @@ HELP_TOPICS = {
     ),
     "rc": (
         "Create Channel",
-        "Create a new channel under the configured parent path.\n"
+        "Create a new channel under the configured parent path. Not available on shared "
+        "accounts such as murid or tamu (ask an admin).\n"
         "Format:\n"
         "  /rc <channel_name>\n\n"
         "Interactive flow:\n"
