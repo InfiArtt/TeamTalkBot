@@ -67,7 +67,8 @@ HELP_TOPICS = {
     ),
     "rc": (
         "Create Channel",
-        "Create a new channel under the configured parent path.\n"
+        "Create a new channel under the configured parent path. Not available on shared "
+        "accounts such as murid or tamu (ask an admin).\n"
         "Format:\n"
         "  /rc <channel_name>\n\n"
         "Interactive flow:\n"
@@ -107,7 +108,8 @@ HELP_TOPICS = {
         "- Without --force the bot asks for 'y' or 'n'.\n\n"
         "Permissions:\n"
         "- Admins: may delete any username.\n"
-        "- Non-admins: may only delete their own account.\n\n"
+        "- Non-admins: may only delete their own account.\n"
+        "- Shared accounts (e.g. murid, tamu, hadirin, osis) cannot be deleted via the bot.\n\n"
         "Examples:\n"
         "  /du alex\n"
         "  /du alex --force\n",

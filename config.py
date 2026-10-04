@@ -89,6 +89,12 @@ CHANNEL_CREATION_BLOCKED_USERNAMES: List[str] = ["guest"]
 CHANNEL_CREATION_BLOCKED_MESSAGE: str = "You are not permitted to create channels."
 REGISTRATION_ALLOWED_USERNAMES: List[str] = ["guest"]
 REGISTRATION_NOT_ALLOWED_MESSAGE: str = "You already have a registered account and do not need to register again."
+# Accounts that many people log in with. They cannot be deleted via the bot,
+# moderation tells their users apart by nickname + IP instead of username, and
+# (unless they are admin accounts) they cannot create or manage channels.
+SHARED_ACCOUNTS: List[str] = [
+    "tamu", "murid", "hadirin", "osis", "pemateri", "f.osis", "guest",
+]
 REGISTRATION_IP_LIMIT: int = 1
 REGISTRATION_IP_WINDOW_MINUTES: int = 2880
 REGISTRATION_IP_LIMIT_MESSAGE: str = "Account creation failed: your IP has reached the registration limit. Please try again later."
@@ -187,6 +193,7 @@ DEFAULTS: Dict[str, Any] = {
     "CHANNEL_CREATION_BLOCKED_MESSAGE": CHANNEL_CREATION_BLOCKED_MESSAGE,
     "REGISTRATION_ALLOWED_USERNAMES": REGISTRATION_ALLOWED_USERNAMES,
     "REGISTRATION_NOT_ALLOWED_MESSAGE": REGISTRATION_NOT_ALLOWED_MESSAGE,
+    "SHARED_ACCOUNTS": SHARED_ACCOUNTS,
     "REGISTRATION_IP_LIMIT": REGISTRATION_IP_LIMIT,
     "REGISTRATION_IP_WINDOW_MINUTES": REGISTRATION_IP_WINDOW_MINUTES,
     "REGISTRATION_IP_LIMIT_MESSAGE": REGISTRATION_IP_LIMIT_MESSAGE,
