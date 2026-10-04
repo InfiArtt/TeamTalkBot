@@ -45,6 +45,11 @@ sudo visudo -cf /etc/sudoers.d/teamtalkbot
 Check it: `sudo -n systemctl restart TeamTalkBot` must work without asking
 for a password.
 
+No account is created here. `$USER` is your own account (the one that owns
+`~/TeamTalkBot`; this is also `DEPLOY_USER` below), `TeamTalkBot` is the
+systemd service name and must match `TeamTalkBot.service` exactly, and
+`teamtalkbot` is only the name of the rule file.
+
 ### 3. Create the deploy key
 
 ```bash
@@ -66,6 +71,14 @@ computer, with the address and SSH port GitHub will use:
 ssh-keyscan -p 22 your.server.example
 ```
 
+On Windows use Git Bash: the `ssh-keyscan` that ships with Windows is too old
+for current Ubuntu servers and fails with
+`choose_kex: unsupported KEX method sntrup761x25519-sha512@openssh.com`.
+Keep all the lines that do not start with `#`. To make sure they really are
+your server's keys, compare the `ED25519` fingerprint from
+`ssh-keyscan -p 22 your.server.example | ssh-keygen -lf -` with the one the
+server prints for `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
+
 ## One-time setup on GitHub
 
 1. **Settings → Environments → New environment**, name it `production`.
@@ -81,6 +94,16 @@ ssh-keyscan -p 22 your.server.example
    | `DEPLOY_SSH_KEY` | the whole content of `~/teamtalkbot_deploy` (the private key) |
    | `DEPLOY_KNOWN_HOSTS` | the output of `ssh-keyscan` from step 4 |
 
+   To get the private key into `DEPLOY_SSH_KEY`, either run
+   `cat ~/teamtalkbot_deploy` on the server and paste everything from
+   `-----BEGIN OPENSSH PRIVATE KEY-----` to `-----END OPENSSH PRIVATE KEY-----`
+   (both lines included), or, from a computer where the GitHub CLI is logged in:
+
+   ```bash
+   scp -P 22 youruser@your.server.example:teamtalkbot_deploy .
+   gh secret set DEPLOY_SSH_KEY --env production --repo InfiArtt/TeamTalkBot < teamtalkbot_deploy
+   rm teamtalkbot_deploy
+   ```
 3. Delete the private key from the server once it is stored on GitHub:
    `rm ~/teamtalkbot_deploy` (keep `~/teamtalkbot_deploy.pub` if you like).
 4. Test it: **Actions → Check and deploy → Run workflow** on `main`.
