@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+### Added
+- GitHub Actions workflow (`.github/workflows/deploy.yml`): pull requests into `main` are checked (all Python files must compile), and merging into `main` updates and restarts the bot on the server over SSH through `tools/deploy.sh`, using a key that can only run that script. Setup: `docs/deploy.md`.
+
+### Changed
+- The shipped badword list is now `badwords/default_words.txt`; `badwords/words.txt` (with the admins' `/bwa`/`/bwd` edits) is git-ignored and created from the default list on first run, so updates no longer conflict with or overwrite those edits.
+- `TeamTalkBot.service` is a template for a non-root account and logs to the journal.
+- `main.sh`, `tools/deploy.sh` and `tools/download_sdk.py` are executable in git (no more `chmod +x` after cloning).
+- README, docs and `/help` credit Rafli alongside Rexya; website address fixed (infiartt.com).
+
 ## [1.1.1] - 2026-09-28
 ### Added
 - Licensed under GPL-3.0-or-later (`LICENSE`), with an additional permission (section 7) to combine the bot with the proprietary TeamTalk 5 SDK.

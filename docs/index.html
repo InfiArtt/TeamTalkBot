@@ -98,7 +98,7 @@
   <ul>
     <li><code>BADWORDS_ENABLED</code>: master switch.</li>
     <li><code>BADWORDS_INTERCEPT_TYPES</code>: list of message types to inspect (<code>"PRIVATE"</code>, <code>"CHANNEL"</code>, <code>"BROADCAST"</code>). Include entries to enable inspection of those scopes.</li>
-    <li><code>BADWORDS_FILE</code>: UTF-8 file storing one word per line (comma-separated values also supported). The bot writes new words here when admins use <code>/bwa</code>/<code>/bwd</code>.</li>
+    <li><code>BADWORDS_FILE</code>: UTF-8 file storing one word per line (comma-separated values also supported). The bot writes new words here when admins use <code>/bwa</code>/<code>/bwd</code>. If it does not exist, the bot starts it as a copy of <code>default_words.txt</code> from the same folder (the list shipped in git); the file itself is git-ignored so updates never overwrite the admins' edits.</li>
     <li><code>BADWORDS_IGNORE_ADMINS</code>: skip enforcement for admin users when true.</li>
     <li><code>BADWORDS_PROFILE_CHECK_ENABLED</code>: when true, nicknames/status messages are scanned via <code>moderation_utils.check_user_profile_badwords</code>.</li>
   </ul>

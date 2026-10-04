@@ -1,16 +1,19 @@
+# Template: replace "teamtalk" with the (non-root) account that owns the
+# checkout, then install it as /etc/systemd/system/TeamTalkBot.service.
+# Logs go to the journal: journalctl -u TeamTalkBot -f
 [Unit]
 Description=TeamTalk Bot Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-ExecStart=/root/TeamTalkBot/main.sh
-WorkingDirectory=/root/TeamTalkBot
+User=teamtalk
+Group=teamtalk
+WorkingDirectory=/home/teamtalk/TeamTalkBot
+ExecStart=/home/teamtalk/TeamTalkBot/main.sh
 Restart=always
-User=root
-Group=root
+RestartSec=5
 Environment=PYTHONUNBUFFERED=1
-StandardOutput=append:/root/TeamTalkBot/teamtalk.log
-StandardError=append:/root/TeamTalkBot/teamtalk.err
 
 [Install]
 WantedBy=multi-user.target

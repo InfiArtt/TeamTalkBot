@@ -103,6 +103,12 @@ The bot auto-generates `config.json` on first launch; edit the JSON file afterwa
 
 All wizards support `/cancel` to abort. Output is chunked automatically if responses exceed TeamTalk’s message limit.
 
+## Deployment
+
+Work on a branch and open a pull request into `main`. GitHub Actions checks every pull request, and merging into `main` updates and restarts the bot on the server over SSH (`tools/deploy.sh`). The one-time server and GitHub setup is in [`docs/deploy.md`](docs/deploy.md).
+
+`badwords/default_words.txt` is the shipped badword list; the bot copies it to `badwords/words.txt` on first run, and that copy (with the admins' `/bwa`/`/bwd` edits) stays on the server and out of git.
+
 ## Maintenance Guidelines
 
 - Treat `TeamTalkPy/`, `TeamTalk_DLL/` and `libTeamTalk5.so` as vendor files installed by `tools/download_sdk.py`—do **not** edit or commit them.
