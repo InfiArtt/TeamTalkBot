@@ -65,6 +65,7 @@ All settings live in `config.json`. Highlights:
 | **Lifecycle** | `CHANNEL_INACTIVITY_TIMEOUT` (`{"value": X, "unit": "days"}`), `CHANNEL_DELETION_WARNING_SECONDS` |
 | **Channel Rules** | `CHANNEL_CREATION_MAX_PER_USER`, limit/block messages, `CHANNEL_CREATION_BLOCKED_USERNAMES` |
 | **Registration** | `REGISTRATION_ALLOWED_USERNAMES`, per-IP limits/messages |
+| **Shared accounts** | `SHARED_ACCOUNTS` – accounts many people log in with (default `tamu`, `murid`, `hadirin`, `osis`, `pemateri`, `f.osis`, `guest`): not deletable via the bot, moderation tells their users apart by nickname + IP, and unless they are admin accounts they cannot create, delete or transfer channels via the bot |
 | **AI context check** | `AI_ENABLED`, `AI_CLOUDFLARE_ACCOUNT_ID`, `AI_CLOUDFLARE_API_TOKEN`, `AI_MODEL`, `AI_TIMEOUT_SEC`, `AI_CONTEXT_MESSAGES`, `AI_AMBIGUOUS_WORDS`, `AI_CHAT_ENABLED`, `AI_CHAT_PREFIX`, `AI_CHAT_MODEL`, `AI_CHAT_MAX_TOKENS`, `AI_CHAT_COOLDOWN_SEC`, `AI_CHAT_DAILY_LIMIT`, `AI_CHAT_HISTORY`, `AI_CHAT_DISCLAIMER` (see [`docs/ai.md`](docs/ai.md)) |
 | **Abuse Throttling** | `ABUSE_LOGIN_ENABLED`, `ABUSE_JOIN_ENABLED`, `ABUSE_LOGIN_COUNT`, `ABUSE_JOIN_COUNT`, `BADWORD_ABUSE_COUNT`, `ABUSE_WINDOW_SEC`, `ABUSE_TEMP_BAN_MINUTES`, `BAN_TARGET`, `ABUSE_WHITELIST_FILE`, warning message arrays |
 | **Message Anti-Spam** | `ANTISPAM_MESSAGE_ENABLED`, `ANTISPAM_MESSAGE_COUNT`, `ANTISPAM_MESSAGE_WINDOW_SEC`, `ANTISPAM_INTERCEPT_TYPES`, `ANTISPAM_IGNORE_ADMINS`, warning message arrays |
