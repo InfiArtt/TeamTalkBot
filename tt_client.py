@@ -2627,12 +2627,31 @@ class BotClient(TeamTalk):
         ]
         user = safe_call(self.getUser, userid)
         nickname = from_tt_char(user.szNickname).strip() if user is not None else ""
+        chan_path = self.getChannelPath(channel_id) or str(channel_id)
+
+        # Snapshot of online users and channels for AI context
+        online_users = []
+        for u in safe_call(self.getServerUsers, default=[]) or []:
+            u_nick = from_tt_char(u.szNickname).strip()
+            if u_nick:
+                u_chan = self.getChannelPath(u.nChannelID) or "Root"
+                online_users.append(f"{u_nick} (di channel {u_chan})")
+
+        channels_list = []
+        for ch in safe_call(self.getServerChannels, default=[]) or []:
+            c_name = self.getChannelPath(ch.nChannelID) or from_tt_char(ch.szName).strip()
+            if c_name:
+                channels_list.append(c_name)
+
         context = {
             "userid": userid,
             "channel": channel_id,
+            "channel_name": chan_path,
             "nickname": nickname,
             "question": question,
             "is_admin": self._is_admin(userid),
+            "online_users": online_users[:40],
+            "channels": channels_list[:40],
         }
         if not self._ai_chat.ask(question, history, context):
             safe_call(self.send_pm, userid, "AI sedang sibuk, coba lagi sebentar lagi.")
@@ -2685,38 +2704,74 @@ class BotClient(TeamTalk):
         except Exception:
             logger.exception("Failed to send a message to channel %s", channel_id)
 
-    def _find_users_by_nickname_fuzzy(self, name: str) -> List[User]:
+    def _find_users_by_nickname_fuzzy(self, name: str, context: Any = None) -> List[User]:
         clean_name = str(name or "").strip().lower()
+        # If user refers to self: "aku", "saya", "me", etc.
+        if clean_name in ("aku", "saya", "gue", "gw", "me", "diriku", "aku sendiri", "saya sendiri"):
+            if isinstance(context, dict) and context.get("userid"):
+                try:
+                    u = self.getUser(int(context["userid"]))
+                    if u is not None:
+                        return [u]
+                except Exception:
+                    pass
         if not clean_name:
             return []
+
         users = self.getServerUsers()
-        # 1. Exact match
-        exact = [u for u in users if from_tt_char(u.szNickname).strip().lower() == clean_name]
+        # 1. Exact match on nickname or username
+        exact = [
+            u for u in users
+            if from_tt_char(u.szNickname).strip().lower() == clean_name
+            or from_tt_char(u.szUsername).strip().lower() == clean_name
+        ]
         if exact:
             return exact
-        # 2. Match without honorifics/prefixes like "kak ", "bang ", "mas ", "pak ", "bu "
-        without_prefix = re.sub(r"^(kak|bang|mas|pak|bu|om|tante)\s+", "", clean_name).strip()
-        if without_prefix and without_prefix != clean_name:
-            prefix_match = [
-                u for u in users if from_tt_char(u.szNickname).strip().lower() == without_prefix
+
+        # 2. Match without honorifics/prefixes like "kak ", "bang ", "mas ", "pak ", "bu ", "@"
+        prefix_pattern = r"^@\s*|^(kak|bang|mas|pak|bu|om|tante|bro|sis|ustadz)\s+"
+        without_prefix = re.sub(prefix_pattern, "", clean_name).strip()
+        stem = without_prefix or clean_name
+        if stem:
+            stem_match = [
+                u for u in users
+                if re.sub(prefix_pattern, "", from_tt_char(u.szNickname).strip().lower()).strip() == stem
+                or from_tt_char(u.szUsername).strip().lower() == stem
             ]
-            if prefix_match:
-                return prefix_match
-        # 3. Substring match
+            if stem_match:
+                return stem_match
+
+        # 3. Token match (e.g. "fian" matches "Kak Fian" or "Fian Pratama")
+        if stem:
+            token_match = []
+            for u in users:
+                nick = from_tt_char(u.szNickname).strip().lower()
+                tokens = set(re.findall(r"\w+", nick))
+                if stem in tokens or clean_name in tokens:
+                    token_match.append(u)
+            if token_match:
+                return token_match
+
+        # 4. Substring match
         partial = [
             u for u in users
-            if clean_name in from_tt_char(u.szNickname).strip().lower()
-            or from_tt_char(u.szNickname).strip().lower() in clean_name
-            or (without_prefix and without_prefix in from_tt_char(u.szNickname).strip().lower())
+            if (stem and stem in from_tt_char(u.szNickname).strip().lower())
+            or (stem and from_tt_char(u.szNickname).strip().lower() in stem)
+            or (stem and stem in from_tt_char(u.szUsername).strip().lower())
         ]
         if partial:
             return partial
         return []
 
-    def _find_channel_id(self, target: str) -> Optional[int]:
+    def _find_channel_id(self, target: str, context: Any = None) -> Optional[int]:
         target_str = str(target or "").strip()
-        if not target_str:
-            return None
+        target_lower = target_str.lower().strip("/")
+
+        # If user says "sini", "channel ini", "room ini", "di sini", or empty
+        if not target_str or target_lower in ("sini", "di sini", "channel ini", "room ini", "current", "saat ini", "ini"):
+            if isinstance(context, dict) and context.get("channel"):
+                return int(context["channel"])
+
         # Try direct path or normalized path
         for p in (target_str, self._normalize_channel_target_to_path(target_str)):
             try:
@@ -2725,17 +2780,48 @@ class BotClient(TeamTalk):
                     return cid
             except Exception:
                 pass
-        # Search all channels by name or path
-        try:
-            target_lower = target_str.lower().strip("/")
-            clean_chan = re.sub(r"^channel\s+", "", target_lower).strip()
-            for ch in self.getServerChannels():
+
+        chans = self.getServerChannels()
+
+        # 1. Exact match with original query (e.g. "Ruang Ekskul" or "Lobi")
+        for ch in chans:
+            name = from_tt_char(ch.szName).lower().strip()
+            path = (self.getChannelPath(ch.nChannelID) or "").lower().strip("/")
+            if target_lower in (name, path) or path.endswith(f"/{target_lower}"):
+                return ch.nChannelID
+
+        # Clean target: strip leading prepositions and channel terms
+        # e.g. "ke channel ekskul" -> "ekskul", "ke room musik" -> "musik"
+        clean_chan = re.sub(r"^(ke|di|pada|menuju)?\s*(channel|room|ruang|saluran)?\s*", "", target_lower).strip()
+        clean_chan = clean_chan.strip("/")
+
+        # 2. Exact match with clean name or path
+        if clean_chan and clean_chan != target_lower:
+            for ch in chans:
                 name = from_tt_char(ch.szName).lower().strip()
                 path = (self.getChannelPath(ch.nChannelID) or "").lower().strip("/")
                 if clean_chan in (name, path) or path.endswith(f"/{clean_chan}"):
                     return ch.nChannelID
-        except Exception:
-            pass
+
+        # 3. Substring match (e.g. "ekskul" matches "Ruang Ekskul" or "Ekskul Musik")
+        search_term = clean_chan or target_lower
+        if search_term:
+            for ch in chans:
+                name = from_tt_char(ch.szName).lower().strip()
+                path = (self.getChannelPath(ch.nChannelID) or "").lower().strip("/")
+                if search_term in name or search_term in path:
+                    return ch.nChannelID
+
+        # 4. Token match
+        if search_term:
+            tokens_query = set(re.findall(r"\w+", search_term))
+            if tokens_query:
+                for ch in chans:
+                    name = from_tt_char(ch.szName).lower().strip()
+                    tokens_name = set(re.findall(r"\w+", name))
+                    if tokens_query.issubset(tokens_name):
+                        return ch.nChannelID
+
         return None
 
     def _execute_ai_tool(self, tool_name: str, tool_args: dict, context: Any) -> Dict[str, Any]:
@@ -2751,7 +2837,7 @@ class BotClient(TeamTalk):
                 }
             nickname = str(tool_args.get("nickname") or "").strip()
             reason = str(tool_args.get("reason") or "").strip()
-            targets = self._find_users_by_nickname_fuzzy(nickname)
+            targets = self._find_users_by_nickname_fuzzy(nickname, context)
             if not targets:
                 return {
                     "status": "error",
@@ -2792,7 +2878,7 @@ class BotClient(TeamTalk):
                 }
             nickname = str(tool_args.get("nickname") or "").strip()
             reason = str(tool_args.get("reason") or "").strip()
-            targets = self._find_users_by_nickname_fuzzy(nickname)
+            targets = self._find_users_by_nickname_fuzzy(nickname, context)
             if not targets:
                 return {
                     "status": "error",
@@ -2838,14 +2924,14 @@ class BotClient(TeamTalk):
                 }
             nickname = str(tool_args.get("nickname") or "").strip()
             channel_target = str(tool_args.get("channel") or "").strip()
-            targets = self._find_users_by_nickname_fuzzy(nickname)
+            targets = self._find_users_by_nickname_fuzzy(nickname, context)
             if not targets:
                 return {
                     "status": "error",
                     "error": "USER_NOT_FOUND",
                     "message": f"User '{nickname}' tidak ditemukan di server.",
                 }
-            cid = self._find_channel_id(channel_target)
+            cid = self._find_channel_id(channel_target, context)
             if not cid:
                 return {
                     "status": "error",
@@ -2922,7 +3008,7 @@ class BotClient(TeamTalk):
             except Exception:
                 minutes = 5
             reason = str(tool_args.get("reason") or "").strip()
-            targets = self._find_users_by_nickname_fuzzy(nickname)
+            targets = self._find_users_by_nickname_fuzzy(nickname, context)
             if not targets:
                 return {
                     "status": "error",
@@ -3107,7 +3193,7 @@ class BotClient(TeamTalk):
 
             items = self._find_abuse_items(target)
             if not items:
-                users = self._find_users_by_nickname_fuzzy(target)
+                users = self._find_users_by_nickname_fuzzy(target, context)
                 for u in users:
                     items.extend(self._find_abuse_items(from_tt_char(u.szNickname)))
                     items.extend(self._find_abuse_items(from_tt_char(u.szUsername)))
@@ -3241,7 +3327,7 @@ class BotClient(TeamTalk):
             nickname = str(tool_args.get("nickname") or "").strip()
             if not nickname:
                 return {"status": "error", "message": "Nama pengguna harus diisi."}
-            targets = self._find_users_by_nickname_fuzzy(nickname)
+            targets = self._find_users_by_nickname_fuzzy(nickname, context)
             if not targets:
                 return {
                     "status": "error",
@@ -3263,7 +3349,7 @@ class BotClient(TeamTalk):
 
         elif tool_name == "check_channel_owner":
             channel_target = str(tool_args.get("channel") or "").strip()
-            cid = self._find_channel_id(channel_target)
+            cid = self._find_channel_id(channel_target, context)
             if not cid:
                 return {
                     "status": "error",
@@ -3307,7 +3393,7 @@ class BotClient(TeamTalk):
                 }
             channel_target = str(tool_args.get("channel") or "").strip()
             password = str(tool_args.get("password") or "").strip()
-            cid = self._find_channel_id(channel_target)
+            cid = self._find_channel_id(channel_target, context)
             if not cid:
                 return {
                     "status": "error",
@@ -3345,7 +3431,9 @@ class BotClient(TeamTalk):
             nickname = str(tool_args.get("nickname") or "").strip()
             channel_target = str(tool_args.get("channel") or "").strip()
             is_op = bool(tool_args.get("is_operator", True))
-            targets = self._find_users_by_nickname_fuzzy(nickname)
+            if not nickname:
+                nickname = "aku"
+            targets = self._find_users_by_nickname_fuzzy(nickname, context)
             if not targets:
                 return {
                     "status": "error",
@@ -3353,7 +3441,9 @@ class BotClient(TeamTalk):
                     "message": f"User '{nickname}' tidak ditemukan di server.",
                 }
             u = targets[0]
-            cid = self._find_channel_id(channel_target) if channel_target else u.nChannelID
+            cid = self._find_channel_id(channel_target, context) if channel_target else None
+            if not cid and isinstance(context, dict) and context.get("channel"):
+                cid = int(context["channel"])
             if not cid:
                 cid = u.nChannelID
             self.doChannelOpEx(u.nUserID, cid, "", is_op)
@@ -3367,7 +3457,7 @@ class BotClient(TeamTalk):
 
         elif tool_name == "get_channel_info":
             channel_target = str(tool_args.get("channel") or "").strip()
-            cid = self._find_channel_id(channel_target)
+            cid = self._find_channel_id(channel_target, context)
             if not cid:
                 return {
                     "status": "error",
@@ -3395,7 +3485,9 @@ class BotClient(TeamTalk):
 
         elif tool_name == "get_user_info":
             nickname = str(tool_args.get("nickname") or "").strip()
-            targets = self._find_users_by_nickname_fuzzy(nickname)
+            if not nickname:
+                nickname = "aku"
+            targets = self._find_users_by_nickname_fuzzy(nickname, context)
             if not targets:
                 return {
                     "status": "error",
