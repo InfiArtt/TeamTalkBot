@@ -46,6 +46,7 @@ from TeamTalkPy.TeamTalk5 import (
     AudioCodec,
     OpusCodec,
     Codec,
+    OPUS_APPLICATION_VOIP,
     buildTextMessage,
     BanType,
     BannedUser,
@@ -952,6 +953,7 @@ class BotClient(TeamTalk):
                         "channel": int(textmessage.nChannelID),
                         "question": question,
                         "held": False,
+                        "is_pm": False,
                     }
             # Filter bad words in channel / broadcast messages if configured
             if textmessage.nMsgType != TextMsgType.MSGTYPE_USER:
@@ -983,7 +985,12 @@ class BotClient(TeamTalk):
                         self._handle_abuse_message(from_uid, self._get_user_ip(from_uid))
                 ask = self._current_ai_question
                 if ask and not ask["held"]:
-                    self._handle_ai_question(ask["userid"], ask["channel"], ask["question"])
+                    self._handle_ai_question(
+                        ask["userid"],
+                        ask["channel"],
+                        ask["question"],
+                        is_pm=bool(ask.get("is_pm", False)),
+                    )
                 return
             from_user = textmessage.nFromUserID
             content = message_text.strip()
@@ -1040,6 +1047,41 @@ class BotClient(TeamTalk):
             if from_user in self._abuse_menus:
                 if abuse_menu.handle_response(self, from_user, content):
                     return
+            # Check if this PM is an @ai question (e.g. "@ai apa itu fotosintesis?" or "/ai ...")
+            ai_pm_question = None
+            if self._ai_chat_active() and from_user != (self.getMyUserID() or 0):
+                if content.lower().startswith("/ai ") or content.lower() == "/ai":
+                    ai_pm_question = content[3:].lstrip(" :,\t\n").strip()
+                else:
+                    ai_pm_question = self._ai_chat_question(content)
+
+            if ai_pm_question is not None and self._ai_chat_active() and from_user != (self.getMyUserID() or 0):
+                u = safe_call(self.getUser, from_user)
+                user_chan = u.nChannelID if (u is not None and hasattr(u, "nChannelID")) else 1
+                self._current_ai_question = {
+                    "userid": from_user,
+                    "channel": user_chan,
+                    "question": ai_pm_question,
+                    "held": False,
+                    "is_pm": True,
+                }
+                if (
+                    self._bw_enabled()
+                    and ("PRIVATE" in self._bw_types())
+                    and not self._is_badword_admin_command(from_user, content)
+                ):
+                    moderation_utils.check_text_badwords(self, textmessage, message_text)
+
+                if self._spam_enabled():
+                    spam_types = self._spam_types()
+                    if "PRIVATE" in spam_types:
+                        self._handle_abuse_message(from_uid, self._get_user_ip(from_uid))
+
+                ask = self._current_ai_question
+                if ask and not ask["held"]:
+                    self._handle_ai_question(ask["userid"], ask["channel"], ask["question"], is_pm=True)
+                return
+
             # Routing heuristic for private messages.
             #
             # The TeamTalk SDK always delivers textmessage.nToUserID = 0 for received
@@ -2539,7 +2581,12 @@ class BotClient(TeamTalk):
     def _answer_held_question(self, ask: Optional[dict]):
         """Answer an "@ai" question whose badword was not counted after all."""
         if ask and self._ai_chat_active():
-            self._handle_ai_question(ask["userid"], ask["channel"], ask["question"])
+            self._handle_ai_question(
+                ask["userid"],
+                ask["channel"],
+                ask["question"],
+                is_pm=bool(ask.get("is_pm", False)),
+            )
 
     # ============ "@ai <question>" in a channel ============
     _AI_CHAT_HISTORY_SEC = 600.0  # earlier questions older than this are forgotten
@@ -2583,7 +2630,7 @@ class BotClient(TeamTalk):
                 pass
         return False
 
-    def _handle_ai_question(self, userid: int, channel_id: int, question: str):
+    def _handle_ai_question(self, userid: int, channel_id: int, question: str, is_pm: bool = False):
         if self._is_ai_chat_blocked_user(userid):
             msg = getattr(
                 config,
@@ -2599,9 +2646,11 @@ class BotClient(TeamTalk):
             return
         if not question:
             prefix = str(getattr(config, "AI_CHAT_PREFIX", "@ai") or "@ai").strip()
-            self._send_channel_text(
-                channel_id, f"Tulis pertanyaan setelah {prefix}, contoh: {prefix} apa itu fotosintesis?"
-            )
+            prompt_msg = f"Tulis pertanyaan setelah {prefix}, contoh: {prefix} apa itu fotosintesis?"
+            if is_pm:
+                safe_call(self.send_pm, userid, prompt_msg)
+            else:
+                self._send_channel_text(channel_id, prompt_msg)
             return
         now = self._now()
         cooldown = float(getattr(config, "AI_CHAT_COOLDOWN_SEC", 20) or 0)
@@ -2620,9 +2669,11 @@ class BotClient(TeamTalk):
         if self._ai_chat_count >= int(getattr(config, "AI_CHAT_DAILY_LIMIT", 200) or 0):
             safe_call(self.send_pm, userid, "Batas pertanyaan ke AI untuk hari ini sudah habis.")
             return
+
+        hist_key = f"pm_{userid}" if is_pm else channel_id
         history = [
             (q, a)
-            for ts, q, a in self._ai_chat_history.get(channel_id, ())
+            for ts, q, a in self._ai_chat_history.get(hist_key, ())
             if now - ts <= self._AI_CHAT_HISTORY_SEC
         ]
         user = safe_call(self.getUser, userid)
@@ -2650,6 +2701,7 @@ class BotClient(TeamTalk):
             "nickname": nickname,
             "question": question,
             "is_admin": self._is_admin(userid),
+            "is_pm": is_pm,
             "online_users": online_users[:40],
             "channels": channels_list[:40],
         }
@@ -2659,17 +2711,20 @@ class BotClient(TeamTalk):
         self._ai_chat_last[userid] = now
         self._ai_chat_count += 1
         logger.info(
-            "AI chat question (user=%s, channel=%s, %s chars, %s earlier turns)",
+            "AI chat question (user=%s, channel=%s, is_pm=%s, %s chars, %s earlier turns)",
             userid,
             channel_id,
+            is_pm,
             len(question),
             len(history),
         )
 
     def _process_ai_chat_results(self):
-        """Post finished AI answers in the channel they were asked in."""
+        """Post finished AI answers in the channel or via PM."""
         for context, answer in self._ai_chat.drain():
             channel_id = context["channel"]
+            userid = context["userid"]
+            is_pm = bool(context.get("is_pm", False))
             if answer is None:
                 text = "Maaf, AI tidak bisa menjawab sekarang. Coba lagi nanti."
             else:
@@ -2677,18 +2732,22 @@ class BotClient(TeamTalk):
                 # "anjing" in an answer about dogs are fine)
                 ambiguous = self._ambiguous_words()
                 if any(e not in ambiguous for e in self._badwords.matching_entries(answer)):
-                    logger.warning("AI chat answer contained a badword; replaced (channel=%s)", channel_id)
+                    logger.warning("AI chat answer contained a badword; replaced (channel=%s, is_pm=%s)", channel_id, is_pm)
                     answer = self._AI_CHAT_REFUSAL
                 size = max(0, int(getattr(config, "AI_CHAT_HISTORY", 3) or 0))
-                history = self._ai_chat_history.setdefault(channel_id, deque(maxlen=max(1, size)))
+                hist_key = f"pm_{userid}" if is_pm else channel_id
+                history = self._ai_chat_history.setdefault(hist_key, deque(maxlen=max(1, size)))
                 if size:
                     history.append((self._now(), context["question"], answer))
-                who = f" untuk {context['nickname']}" if context.get("nickname") else ""
+                who = f" untuk {context['nickname']}" if (context.get("nickname") and not is_pm) else ""
                 disclaimer = str(getattr(config, "AI_CHAT_DISCLAIMER", "") or "").strip()
                 text = f"[AI]{who}: {answer}"
                 if disclaimer:
                     text += f"\n{disclaimer}"
-            self._send_channel_text(channel_id, text)
+            if is_pm:
+                safe_call(self.send_pm, userid, text)
+            else:
+                self._send_channel_text(channel_id, text)
 
     def _send_channel_text(self, channel_id: int, text: str):
         """Post a channel message; as an admin the bot need not be in the channel."""
@@ -2762,6 +2821,32 @@ class BotClient(TeamTalk):
         if partial:
             return partial
         return []
+
+    def _find_multiple_users(self, raw_input: str, context: Any = None) -> List[User]:
+        clean = str(raw_input or "").strip()
+        if not clean:
+            return []
+
+        myid = self.getMyUserID() or 0
+        if clean.lower() in ("all", "semua", "semua user", "semua orang"):
+            cid = context.get("channel") if isinstance(context, dict) else None
+            if cid:
+                return [u for u in self.getServerUsers() if u.nChannelID == int(cid) and u.nUserID != myid]
+            return [u for u in self.getServerUsers() if u.nUserID != myid]
+
+        parts = re.split(r",|\s+dan\s+|\s+and\s+", clean, flags=re.IGNORECASE)
+        found: List[User] = []
+        seen_ids = set()
+        for p in parts:
+            p_str = p.strip()
+            if not p_str:
+                continue
+            matched = self._find_users_by_nickname_fuzzy(p_str, context)
+            for u in matched:
+                if u.nUserID not in seen_ids:
+                    seen_ids.add(u.nUserID)
+                    found.append(u)
+        return found
 
     def _find_channel_id(self, target: str, context: Any = None) -> Optional[int]:
         target_str = str(target or "").strip()
@@ -2837,7 +2922,7 @@ class BotClient(TeamTalk):
                 }
             nickname = str(tool_args.get("nickname") or "").strip()
             reason = str(tool_args.get("reason") or "").strip()
-            targets = self._find_users_by_nickname_fuzzy(nickname, context)
+            targets = self._find_multiple_users(nickname, context)
             if not targets:
                 return {
                     "status": "error",
@@ -2878,7 +2963,7 @@ class BotClient(TeamTalk):
                 }
             nickname = str(tool_args.get("nickname") or "").strip()
             reason = str(tool_args.get("reason") or "").strip()
-            targets = self._find_users_by_nickname_fuzzy(nickname, context)
+            targets = self._find_multiple_users(nickname, context)
             if not targets:
                 return {
                     "status": "error",
@@ -2924,7 +3009,7 @@ class BotClient(TeamTalk):
                 }
             nickname = str(tool_args.get("nickname") or "").strip()
             channel_target = str(tool_args.get("channel") or "").strip()
-            targets = self._find_users_by_nickname_fuzzy(nickname, context)
+            targets = self._find_multiple_users(nickname, context)
             if not targets:
                 return {
                     "status": "error",
@@ -2946,6 +3031,52 @@ class BotClient(TeamTalk):
             return {
                 "status": "success",
                 "message": f"User {', '.join(moved)} berhasil dipindahkan ke channel {chan_name}.",
+            }
+
+        elif tool_name == "move_channel_users":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh mindahin orang.",
+                }
+            from_channel = str(tool_args.get("from_channel") or "").strip()
+            to_channel = str(tool_args.get("to_channel") or "").strip()
+            from_cid = self._find_channel_id(from_channel, context)
+            if not from_cid:
+                return {
+                    "status": "error",
+                    "error": "CHANNEL_NOT_FOUND",
+                    "message": f"Channel asal '{from_channel}' tidak ditemukan di server.",
+                }
+            to_cid = self._find_channel_id(to_channel, context)
+            if not to_cid:
+                return {
+                    "status": "error",
+                    "error": "CHANNEL_NOT_FOUND",
+                    "message": f"Channel tujuan '{to_channel}' tidak ditemukan di server.",
+                }
+            if from_cid == to_cid:
+                return {
+                    "status": "error",
+                    "message": "Channel asal dan channel tujuan tidak boleh sama.",
+                }
+            myid = self.getMyUserID() or 0
+            targets = [u for u in self.getServerUsers() if u.nChannelID == from_cid and u.nUserID != myid]
+            from_path = self.getChannelPath(from_cid) or from_channel
+            to_path = self.getChannelPath(to_cid) or to_channel
+            if not targets:
+                return {
+                    "status": "success",
+                    "message": f"Tidak ada pengguna di channel {from_path} untuk dipindahkan ke {to_path}.",
+                }
+            moved = []
+            for u in targets:
+                self.doMoveUser(u.nUserID, to_cid)
+                moved.append(from_tt_char(u.szNickname))
+            return {
+                "status": "success",
+                "message": f"Berhasil memindahkan {len(moved)} user ({', '.join(moved)}) dari channel {from_path} ke {to_path}.",
             }
 
         elif tool_name == "list_online_users":
@@ -3091,9 +3222,44 @@ class BotClient(TeamTalk):
                     "message": "Kamu bukan admin, jadi gak boleh ngatur fitur moderasi.",
                 }
             feat_raw = str(tool_args.get("feature") or "").strip().lower()
-            enabled = bool(tool_args.get("enabled", True))
+
+            # Determine enabled status robustly: parse strings ("false", "off"), numbers, and user question context
+            q_text = str(context.get("question") or "") if isinstance(context, dict) else ""
+            q_lower = q_text.lower()
+            wants_off = any(w in q_lower for w in ("matiin", "matikan", "nonaktifkan", "turn off", "disable", "non aktif", "non-aktif", "matikanlah", " off"))
+            wants_on = any(w in q_lower for w in ("hidupin", "hidupkan", "aktifkan", "nyalain", "nyalakan", "turn on", "enable", " on ", "hidupkanlah"))
+
+            raw_val = tool_args.get("enabled")
+            if raw_val is None:
+                for k in ("action", "state", "status", "mode", "toggle"):
+                    if k in tool_args:
+                        raw_val = tool_args[k]
+                        break
+
+            if wants_off and not wants_on:
+                enabled = False
+            elif wants_on and not wants_off:
+                enabled = True
+            elif raw_val is not None:
+                if isinstance(raw_val, bool):
+                    enabled = raw_val
+                elif isinstance(raw_val, (int, float)):
+                    enabled = (raw_val != 0)
+                elif isinstance(raw_val, str):
+                    v = raw_val.strip().lower()
+                    if v in ("false", "0", "off", "mati", "matikan", "matiin", "nonaktif", "nonaktifkan", "disable", "disabled", "no", "tidak"):
+                        enabled = False
+                    elif v in ("true", "1", "on", "hidup", "hidupkan", "hidupin", "aktif", "aktifkan", "nyala", "nyalakan", "enable", "enabled", "yes", "ya"):
+                        enabled = True
+                    else:
+                        enabled = True
+                else:
+                    enabled = bool(raw_val)
+            else:
+                enabled = True
+
             action_str = "diaktifkan" if enabled else "dinonaktifkan"
-            if feat_raw in ("all", "moderation", "semua", "semua moderasi", "semua fitur"):
+            if feat_raw in ("all", "moderation", "moderasi", "semua", "semua moderasi", "semua fitur"):
                 target_features = ["login", "join", "spam", "badwords", "profile", "pm"]
                 for f in target_features:
                     self._set_feature(f, enabled)
@@ -3107,20 +3273,31 @@ class BotClient(TeamTalk):
                 "word filter": "badwords",
                 "filter kata": "badwords",
                 "filter_kata": "badwords",
+                "filter": "badwords",
                 "badword": "badwords",
                 "badwords": "badwords",
+                "kata kasar": "badwords",
                 "antispam": "spam",
                 "anti spam": "spam",
                 "anti_spam": "spam",
                 "spam": "spam",
+                "spam protection": "spam",
+                "proteksi spam": "spam",
+                "perlindungan spam": "spam",
                 "login": "login",
                 "join": "join",
                 "profile": "profile",
+                "profil": "profile",
                 "pm": "pm",
+                "private message": "pm",
+                "pesan pribadi": "pm",
                 "ai": "ai",
+                "ai review": "ai",
+                "review ai": "ai",
                 "aichat": "aichat",
                 "ai_chat": "aichat",
                 "chat_ai": "aichat",
+                "chat ai": "aichat",
             }
             target_feat = mapping.get(feat_raw, feat_raw)
             known_features = {name for name, _desc, _key in self._FEATURES}
@@ -3430,7 +3607,19 @@ class BotClient(TeamTalk):
                 }
             nickname = str(tool_args.get("nickname") or "").strip()
             channel_target = str(tool_args.get("channel") or "").strip()
-            is_op = bool(tool_args.get("is_operator", True))
+            raw_op = tool_args.get("is_operator")
+            q_text = str(context.get("question") or "").lower() if isinstance(context, dict) else ""
+            if any(w in q_text for w in ("cabut", "hapus", "revoke", "bukan operator", "jangan jadi operator")):
+                is_op = False
+            elif any(w in q_text for w in ("jadiin", "jadikan", "beri", "grant", "tambah")):
+                is_op = True
+            elif raw_op is not None:
+                if isinstance(raw_op, str) and raw_op.strip().lower() in ("false", "0", "off", "cabut", "revoke"):
+                    is_op = False
+                else:
+                    is_op = bool(raw_op)
+            else:
+                is_op = True
             if not nickname:
                 nickname = "aku"
             targets = self._find_users_by_nickname_fuzzy(nickname, context)
@@ -3513,6 +3702,29 @@ class BotClient(TeamTalk):
                 "message": f"Data pengguna: {', '.join(details)}.",
             }
 
+        elif tool_name in ("send_channel_message", "channel_message"):
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh nyuruh bot kirim pesan channel.",
+                }
+            msg = str(tool_args.get("message") or "").strip()
+            if not msg:
+                return {"status": "error", "message": "Pesan channel tidak boleh kosong."}
+            channel_target = str(tool_args.get("channel") or "").strip()
+            cid = self._find_channel_id(channel_target, context) if channel_target else None
+            if not cid and isinstance(context, dict) and context.get("channel"):
+                cid = int(context["channel"])
+            if not cid:
+                cid = self.getRootChannelID() or 1
+            self._send_channel_text(cid, msg)
+            cpath = self.getChannelPath(cid) or f"channel {cid}"
+            return {
+                "status": "success",
+                "message": f"Pesan berhasil dikirim ke {cpath}: '{msg}'.",
+            }
+
         elif tool_name == "broadcast_message":
             if not is_admin:
                 return {
@@ -3523,6 +3735,33 @@ class BotClient(TeamTalk):
             msg = str(tool_args.get("message") or "").strip()
             if not msg:
                 return {"status": "error", "message": "Pesan broadcast tidak boleh kosong."}
+
+            # Safety redirect: if user actually requested a channel message or specified a channel,
+            # send to channel instead of broadcasting to the entire server
+            q_text = str(context.get("question") or "").lower() if isinstance(context, dict) else ""
+            channel_in_args = str(tool_args.get("channel") or "").strip()
+            is_channel_msg_intent = (
+                bool(channel_in_args)
+                or "channel message" in q_text
+                or "pesan channel" in q_text
+                or "pesan ke channel" in q_text
+                or "chat ke channel" in q_text
+                or "chat channel" in q_text
+                or ("ke channel" in q_text and not any(b in q_text for b in ("broadcast", "siaran", "seluruh server", "semua channel")))
+            )
+            if is_channel_msg_intent:
+                cid = self._find_channel_id(channel_in_args, context) if channel_in_args else None
+                if not cid and isinstance(context, dict) and context.get("channel"):
+                    cid = int(context["channel"])
+                if not cid:
+                    cid = self.getRootChannelID() or 1
+                self._send_channel_text(cid, msg)
+                cpath = self.getChannelPath(cid) or f"channel {cid}"
+                return {
+                    "status": "success",
+                    "message": f"Pesan berhasil dikirim ke {cpath}: '{msg}'.",
+                }
+
             my_id = self.getMyUserID() or 0
             parts = buildTextMessage(content=msg, nMsgType=TextMsgType.MSGTYPE_BROADCAST, nFromUserID=my_id)
             for part in parts:
@@ -3530,6 +3769,282 @@ class BotClient(TeamTalk):
             return {
                 "status": "success",
                 "message": f"Pesan siaran berhasil dikirim ke seluruh server: '{msg}'.",
+            }
+
+        elif tool_name in ("send_private_message", "pm_user"):
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh nyuruh bot kirim pesan pribadi.",
+                }
+            nickname = str(tool_args.get("nickname") or "").strip()
+            msg = str(tool_args.get("message") or "").strip()
+            if not msg:
+                return {"status": "error", "message": "Pesan pribadi tidak boleh kosong."}
+            targets = self._find_multiple_users(nickname, context)
+            if not targets:
+                return {
+                    "status": "error",
+                    "error": "USER_NOT_FOUND",
+                    "message": f"User '{nickname}' tidak ditemukan di server.",
+                }
+            sent_to = []
+            for u in targets:
+                safe_call(self.send_pm, u.nUserID, msg)
+                sent_to.append(from_tt_char(u.szNickname))
+            return {
+                "status": "success",
+                "message": f"Pesan pribadi berhasil dikirim ke {', '.join(sent_to)}: '{msg}'.",
+            }
+
+        elif tool_name == "create_channel":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh buat channel baru.",
+                }
+            name = str(tool_args.get("name") or "").strip()
+            if not name:
+                return {"status": "error", "message": "Nama channel tidak boleh kosong."}
+            parent_channel = str(tool_args.get("parent_channel") or "").strip()
+            topic = str(tool_args.get("topic") or "").strip()
+            password = str(tool_args.get("password") or "").strip()
+            try:
+                max_users = int(tool_args.get("max_users") or 0)
+            except Exception:
+                max_users = 0
+
+            parent_id = 0
+            if parent_channel:
+                parent_id = self._find_channel_id(parent_channel, context) or 0
+            if parent_id <= 0:
+                parent_id = self.getRootChannelID() if hasattr(self, "getRootChannelID") else 1
+                if not parent_id or parent_id <= 0:
+                    parent_id = 1
+
+            chan = Channel()
+            chan.nParentID = parent_id
+            assign_tt_char_array((chan, "szName"), name)
+            assign_tt_char_array((chan, "szTopic"), topic)
+            assign_tt_char_array((chan, "szPassword"), password)
+            chan.bPassword = bool(password)
+            assign_tt_char_array((chan, "szOpPassword"), "")
+
+            try:
+                channel_cfg = channel_wizard._channel_defaults()
+                audio_cfg = channel_wizard._audio_defaults()
+            except Exception:
+                channel_cfg = {}
+                audio_cfg = {}
+
+            chan.nMaxUsers = max_users if max_users > 0 else int(channel_cfg.get("max_users", 50))
+            chan.nDiskQuota = int(channel_cfg.get("disk_quota_mb", 100)) * 1024 * 1024
+            chan.nUserData = 0
+            chan.uChannelType = ChannelType.CHANNEL_PERMANENT
+
+            ac = AudioCodec()
+            ac.nCodec = Codec.OPUS_CODEC
+            oc = OpusCodec()
+            oc.nApplication = OPUS_APPLICATION_VOIP
+            oc.nSampleRate = int(audio_cfg.get("sample_rate", 48000))
+            oc.nChannels = 1
+            oc.nBitRate = int(audio_cfg.get("bitrate_kbps", 64)) * 1000
+            oc.bVBR = True
+            oc.bDTX = False
+            oc.bFEC = False
+            oc.bVBRConstraint = False
+            oc.nTxIntervalMSec = 20
+            oc.nFrameSizeMSec = 20
+            oc.nComplexity = 10
+            ac.u.opus = oc
+            chan.audiocodec = ac
+            chan.audiocfg.bEnableAGC = False
+            chan.audiocfg.nGainLevel = 0
+
+            cmdid = self.doMakeChannel(chan)
+            if cmdid <= 0:
+                return {
+                    "status": "error",
+                    "message": f"Gagal mengirim permintaan pembuatan channel '{name}' ke server.",
+                }
+            parent_path = self.getChannelPath(parent_id) or f"channel {parent_id}"
+            return {
+                "status": "success",
+                "message": f"Channel '{name}' berhasil dibuat di {parent_path}.",
+            }
+
+        elif tool_name == "delete_channel":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh hapus channel.",
+                }
+            channel_target = str(tool_args.get("channel") or "").strip()
+            cid = self._find_channel_id(channel_target, context)
+            if not cid:
+                return {
+                    "status": "error",
+                    "error": "CHANNEL_NOT_FOUND",
+                    "message": f"Channel '{channel_target}' tidak ditemukan di server.",
+                }
+            root_id = self.getRootChannelID() if hasattr(self, "getRootChannelID") else 1
+            if cid == root_id or cid == 1:
+                return {
+                    "status": "error",
+                    "message": "Channel root tidak boleh dihapus.",
+                }
+            cpath = self.getChannelPath(cid) or channel_target
+            cmdid = self.doRemoveChannel(cid)
+            if cmdid <= 0:
+                return {
+                    "status": "error",
+                    "message": f"Gagal mengirim perintah hapus channel '{cpath}' ke server.",
+                }
+            return {
+                "status": "success",
+                "message": f"Channel {cpath} berhasil dihapus dari server.",
+            }
+
+        elif tool_name == "list_channel_users":
+            channel_target = str(tool_args.get("channel") or "").strip()
+            cid = self._find_channel_id(channel_target, context)
+            if not cid:
+                return {
+                    "status": "error",
+                    "error": "CHANNEL_NOT_FOUND",
+                    "message": f"Channel '{channel_target}' tidak ditemukan di server.",
+                }
+            cpath = self.getChannelPath(cid) or channel_target
+            try:
+                chan_users = self.getChannelUsers(cid) or []
+            except Exception:
+                chan_users = []
+            if not chan_users:
+                chan_users = [u for u in self.getServerUsers() if u.nChannelID == cid]
+            nicks = []
+            for u in chan_users:
+                nick = from_tt_char(u.szNickname)
+                if nick:
+                    nicks.append(nick)
+            if not nicks:
+                return {
+                    "status": "success",
+                    "users": [],
+                    "total": 0,
+                    "message": f"Tidak ada pengguna di channel {cpath} saat ini.",
+                }
+            return {
+                "status": "success",
+                "users": nicks,
+                "total": len(nicks),
+                "message": f"Ada {len(nicks)} pengguna di channel {cpath}: {', '.join(nicks)}.",
+            }
+
+        elif tool_name == "list_channel_files":
+            channel_target = str(tool_args.get("channel") or "").strip()
+            cid = self._find_channel_id(channel_target, context)
+            if not cid:
+                return {
+                    "status": "error",
+                    "error": "CHANNEL_NOT_FOUND",
+                    "message": f"Channel '{channel_target}' tidak ditemukan di server.",
+                }
+            cpath = self.getChannelPath(cid) or channel_target
+            try:
+                files = self.getChannelFiles(cid) or []
+            except Exception:
+                files = []
+            file_names = []
+            for f in files:
+                name = from_tt_char(f.szFileName)
+                size_kb = (f.nFileSize or 0) // 1024
+                if name:
+                    file_names.append(f"{name} ({size_kb} KB)")
+            if not file_names:
+                return {
+                    "status": "success",
+                    "files": [],
+                    "total": 0,
+                    "message": f"Tidak ada file yang diunggah di channel {cpath}.",
+                }
+            return {
+                "status": "success",
+                "files": file_names,
+                "total": len(file_names),
+                "message": f"Ditemukan {len(file_names)} file di channel {cpath}: {', '.join(file_names)}.",
+            }
+
+        elif tool_name == "get_server_properties":
+            try:
+                props = self.getServerProperties()
+            except Exception:
+                props = None
+            if not props:
+                return {
+                    "status": "error",
+                    "message": "Gagal mengambil properti server saat ini.",
+                }
+            sname = from_tt_char(props.szServerName) if hasattr(props, "szServerName") else "TeamTalk Server"
+            motd = from_tt_char(props.szMOTD).strip() if hasattr(props, "szMOTD") else ""
+            max_u = props.nMaxUsers if hasattr(props, "nMaxUsers") else 0
+            ver = from_tt_char(props.szServerVersion) if hasattr(props, "szServerVersion") else ""
+            parts = [f"Nama server: {sname}"]
+            if motd:
+                parts.append(f"MOTD: '{motd}'")
+            if max_u > 0:
+                parts.append(f"Kapasitas: {max_u} pengguna")
+            if ver:
+                parts.append(f"Versi server: {ver}")
+            return {
+                "status": "success",
+                "message": f"Properti server: {', '.join(parts)}.",
+            }
+
+        elif tool_name == "kick_channel_users":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh kick orang.",
+                }
+            channel_target = str(tool_args.get("channel") or "").strip()
+            reason = str(tool_args.get("reason") or "").strip()
+            cid = self._find_channel_id(channel_target, context)
+            if not cid:
+                return {
+                    "status": "error",
+                    "error": "CHANNEL_NOT_FOUND",
+                    "message": f"Channel '{channel_target}' tidak ditemukan di server.",
+                }
+            myid = self.getMyUserID() or 0
+            targets = [u for u in self.getServerUsers() if u.nChannelID == cid and u.nUserID != myid]
+            cpath = self.getChannelPath(cid) or channel_target
+            if not targets:
+                return {
+                    "status": "success",
+                    "message": f"Tidak ada pengguna lain di channel {cpath} untuk ditendang.",
+                }
+            kicked = []
+            for u in targets:
+                nick = from_tt_char(u.szNickname)
+                if reason:
+                    safe_call(self.send_pm, u.nUserID, reason)
+                kicked.append(nick)
+                self._schedule_action(
+                    self._now() + 0.1,
+                    self._execute_manual_kick,
+                    u.nUserID,
+                    requester_id,
+                    nick,
+                    reason,
+                    True,
+                )
+            return {
+                "status": "success",
+                "message": f"Berhasil menendang {len(kicked)} user ({', '.join(kicked)}) dari channel {cpath}.",
             }
 
         elif tool_name == "get_bot_info":

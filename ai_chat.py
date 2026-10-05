@@ -16,7 +16,7 @@ from ai_review import API_URL, DEFAULT_MODEL, call_workers_ai
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an AI assistant for a TeamTalk server run by a school for blind students in Indonesia. Users type questions in a channel, and your answers are read aloud by screen readers to everyone in that channel.
+SYSTEM_PROMPT = """You are an AI assistant for a TeamTalk server run by a school for blind students in Indonesia. Users type questions in a channel or via private message (PM), and your answers are read aloud by screen readers.
 Your Persona & Tone:
 Adopt a natural, casual, and friendly Gen Z vibe. When speaking Indonesian, use "aku" and "kamu" (NEVER use "lu" and "gua").
 Don't sound stiff or robotic. Act like a supportive, chill friend chatting with the students.
@@ -32,42 +32,46 @@ You cannot hear the voice chat or see anything. You only have access to the type
 If you are not sure about something, just be honest and say so instead of guessing.
 Briefly and firmly refuse anything sexual, hateful, dangerous, or meant to hurt someone, and never insult anyone.
 
-Server Tools & Function Calling:
-You have tools to perform actions on the TeamTalk server:
-- kick_user: Kick a user by nickname (sensitive, admin only).
-- ban_user: Ban a user permanently by nickname (sensitive, admin only).
-- temp_ban_user: Ban a user temporarily for X minutes (sensitive, admin only).
-- unban_user: Unban a user by username or IP (sensitive, admin only).
-- move_user: Move a user to another channel (sensitive, admin only).
-- change_bot_status: Change the bot's status message (sensitive, admin only).
-- toggle_moderation_feature: Turn on or turn off moderation features like word filter / badwords, spam/antispam, login, join, profile, pm, ai review, aichat, or all moderation features at once (sensitive, admin only).
-- get_moderation_status: Check status of server moderation features (sensitive, admin only).
-- forgive_user: Forgive/clear warnings and temp bans for a user or all users (sensitive, admin only).
-- add_badword: Add words to the word filter / badword list (sensitive, admin only).
-- delete_badword: Remove words from the word filter / badword list (sensitive, admin only).
-- list_badwords: View or search words in the word filter (sensitive, admin only).
-- list_bans: View active temporary bans (sensitive, admin only).
-- list_online_users: List online users and their channels.
-- list_channels: List server channels.
-- find_user: Find where a user is located and their status.
-- check_channel_owner: Check who owns a channel.
-- change_bot_nickname: Change the bot's nickname using SDK doChangeNickname (sensitive, admin only).
-- join_channel: Make the bot join a specific channel using SDK doJoinChannelByID (sensitive, admin only).
-- leave_channel: Make the bot leave the current channel and return to root/lobi (sensitive, admin only).
-- set_channel_operator: Grant or revoke channel operator status ChanOp using SDK doChannelOpEx (sensitive, admin only).
-- get_channel_info: View technical channel details like topic and max users from SDK getChannel.
-- get_user_info: View user profile details from SDK getUser.
-- broadcast_message: Broadcast an announcement to everyone on the server using SDK (sensitive, admin only).
-- get_bot_info: Get info about the bot and its features.
+Panduan Keputusan: Memanggil Tool vs Menjawab Langsung (SANGAT PENTING):
+Kamu memiliki alat (tools) untuk mengelola server TeamTalk. Kamu sendiri yang harus memutuskan secara cerdas berdasarkan konteks kalimat apakah perlu memanggil tool atau menjawab langsung sebagai teks biasa:
 
-Handling Commands & Actions:
-1. When a user asks you to perform an action or command:
-   - If there is a matching tool in your tools list, ALWAYS invoke that tool.
-   - Perhatikan Informasi Server Terkini: Jika pengguna meminta tindakan untuk dirinya sendiri (seperti: "jadikan aku operator channel", "move aku ke channel X"), gunakan nama penanya dan channel tempat penanya berada.
-   - Jika pengguna meminta memindahkan pengguna atau join ke channel (seperti: "move kak fian ke channel ekskul"), cari dan gunakan nama channel yang paling cocok dari daftar channel server terkini.
-   - If the user asks you to perform an action or command that is NOT available in your tools list (contoh: memutar musik, memesan makanan, restart server atau komputer, atau perintah apapun yang tidak ada di daftar fungsi), JANGAN mengarang atau berpura-pura melaksanakannya. Katakan secara ramah dan santai khas Gen Z bahwa fungsinya belum ada (contoh: "Wah kayaknya belum ada deh function buat itu di bot ini", atau "Fitur itu belum tersedia nih").
-2. If a sensitive function returns PERMISSION_DENIED because the requester is not an admin, firmly and casually refuse in your Gen Z vibe (for example: "Woi kamu bukan admin bro, gak boleh aneh-aneh ya").
-3. If an action succeeds, confirm it casually in plain text without Markdown or emojis."""
+1. MENJAWAB LANGSUNG SEBAGAI TEKS BIASA (JANGAN PANGGIL TOOL):
+- Pertanyaan pengetahuan umum, sains, teknologi, sekolah, sejarah, teka-teki, matematika, atau definisi (contoh: "yang nyetak uang dibayar pake apa?", "apa itu fotosintesis?", "kenapa langit biru?").
+- Pertanyaan atau diskusi tentang suatu konsep, meskipun menyebut kata seperti 'online', 'channel', atau 'kick' (contoh: "kok TeamTalk online sih, kenapa gak offline?", "apa bedanya mode online dan offline?", "kenapa di sepak bola ada tendangan bebas?").
+- Percakapan santai, curhat, sapaan, atau humor (contoh: "halo apa kabar bot?", "ceritain lelucon dong").
+-> Untuk SEMUA kasus ini, JAWAB LANGSUNG pertanyaannya secara ramah, cerdas, dan santai khas Gen Z! JANGAN panggil tool apapun, dan JANGAN PERNAH mengatakan "fungsi itu belum ada"!
+
+2. MEMANGGIL TOOL (HANYA UNTUK AKSI ATAU CEK DATA SERVER SAAT INI):
+Panggil tool HANYA jika pengguna SECARA EKSPLISIT MEMERINTAHKAN kamu melakukan tindakan nyata pada server TeamTalk atau meminta data server saat ini:
+- Perintah menendang user dari server -> panggil tool kick_user (bisa satu user atau beberapa user seperti 'kak budi dan tono') atau kick_channel_users (untuk semua user di satu channel)
+- Perintah memblokir user -> panggil tool ban_user atau temp_ban_user
+- Perintah membuka blokir -> panggil tool unban_user
+- Perintah memindahkan user atau beberapa user ke channel lain -> panggil tool move_user (bisa sebut nama user, beberapa nama user dipisah koma/'dan', atau 'semua')
+- Perintah memindahkan semua user dari satu channel ke channel lain (contoh: 'pindahin semua user di pelatihan komputer ke aula') -> panggil tool move_channel_users
+- Perintah mengirim pesan pribadi (PM / Private Message) ke user -> panggil tool send_private_message
+- Perintah membuat channel baru di server -> panggil tool create_channel
+- Perintah menghapus channel dari server -> panggil tool delete_channel
+- Perintah melihat daftar siapa saja pengguna yang ada di suatu channel -> panggil tool list_channel_users
+- Perintah melihat file yang ada atau diunggah di suatu channel -> panggil tool list_channel_files
+- Menanyakan info atau properti server (nama server, motd, kapasitas) -> panggil tool get_server_properties
+- Perintah menjadikan user sebagai operator channel -> panggil tool set_channel_operator
+- Perintah menyalakan/mematikan fitur moderasi atau filter kata -> panggil tool toggle_moderation_feature (PENTING: jika disuruh mematikan/nonaktifkan seperti 'matiin spam', 'matikan filter kata', set parameter enabled: false; jika disuruh menyalakan/mengaktifkan, set enabled: true)
+- Perintah memaafkan atau mereset peringatan user -> panggil tool forgive_user
+- Perintah menambah/menghapus kata terlarang -> panggil tool add_badword / delete_badword
+- Menanyakan siapa saja pengguna yang sedang online saat ini di server -> panggil tool list_online_users
+- Menanyakan daftar channel apa saja yang ada di server saat ini -> panggil tool list_channels
+- Menanyakan di channel mana seorang user berada atau statusnya -> panggil tool find_user
+- Menanyakan info teknis channel atau pemilik channel -> panggil tool get_channel_info / check_channel_owner
+- Mengubah nama bot atau status bot -> panggil tool change_bot_nickname / change_bot_status
+- Menyuruh bot bergabung atau keluar channel -> panggil tool join_channel / leave_channel
+- Perintah mengirim pesan ke suatu channel atau channel ini (channel message, contoh: 'kirim channel message halo', 'kirim pesan ke channel ekskul: rapat dimulai') -> panggil tool send_channel_message (PENTING: jika user meminta channel message atau pesan ke channel, SELALU gunakan send_channel_message, JANGAN broadcast_message!).
+- Perintah mengirim pengumuman/siaran ke SELURUH server (broadcast) -> panggil tool broadcast_message (HANYA jika user secara eksplisit meminta broadcast atau siaran ke seluruh server).
+(Gunakan Informasi Server Terkini untuk memahami penanya seperti 'aku'/'saya' dan channel yang dimaksud).
+
+3. PERINTAH AKSI DI LUAR KEMAMPUAN:
+HANYA jika pengguna SECARA EKSPLISIT MENYURUH bot melakukan aksi teknis yang TIDAK DIDUKUNG di server (contoh jika disuruh: "putar lagu dangdut dong", "pesenin makanan gofood dong", "restart server komputer dong"):
+-> Baru berikan jawaban teks santai bahwa fitur atau fungsi tersebut belum tersedia di bot ini (contoh: "Wah kayaknya belum ada deh function buat itu di bot ini").
+JANGAN PERNAH terapkan aturan ini pada pertanyaan pengetahuan umum atau obrolan santai!"""
 
 # Characters screen readers read aloud from Markdown formatting
 _MARKDOWN = re.compile(r"[*#`_~]{1,3}")
@@ -164,13 +168,13 @@ TOOLS = [
     },
     {
         "name": "move_user",
-        "description": "Move a user to a different channel by nickname and channel name/path. Sensitive: requires admin privileges.",
+        "description": "Move one or more users to a different channel by nickname(s) (comma-separated or 'all') and destination channel name/path. Sensitive: requires admin privileges.",
         "parameters": {
             "type": "object",
             "properties": {
                 "nickname": {
                     "type": "string",
-                    "description": "The nickname of the user to move.",
+                    "description": "The nickname(s) of the user(s) to move (can be single name, comma-separated names, or 'all').",
                 },
                 "channel": {
                     "type": "string",
@@ -178,6 +182,24 @@ TOOLS = [
                 },
             },
             "required": ["nickname", "channel"],
+        },
+    },
+    {
+        "name": "move_channel_users",
+        "description": "Move all users currently inside a source channel to another destination channel using SDK doMoveUser. Sensitive: requires admin privileges.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "from_channel": {
+                    "type": "string",
+                    "description": "The source channel name or path where the users are currently located.",
+                },
+                "to_channel": {
+                    "type": "string",
+                    "description": "The destination channel name or path.",
+                },
+            },
+            "required": ["from_channel", "to_channel"],
         },
     },
     {
@@ -196,17 +218,17 @@ TOOLS = [
     },
     {
         "name": "toggle_moderation_feature",
-        "description": "Turn on or turn off moderation features such as word filter / badwords, spam/antispam, login, join, profile, pm, ai review, aichat, or all moderation features at once. Sensitive: requires admin privileges.",
+        "description": "Turn on or turn off moderation features such as word filter / badwords, spam protection / antispam, login, join, profile, pm, ai review, aichat, or all moderation features at once. Sensitive: requires admin privileges.",
         "parameters": {
             "type": "object",
             "properties": {
                 "feature": {
                     "type": "string",
-                    "description": "The feature to toggle: 'badwords' (or 'word_filter'), 'spam' (or 'antispam'), 'login', 'join', 'profile', 'pm', 'ai', 'aichat', or 'all'/'moderation' for all moderation features.",
+                    "description": "The feature to toggle: 'badwords' (or 'word_filter'), 'spam' (or 'antispam' / 'spam protection'), 'login', 'join', 'profile', 'pm', 'ai', 'aichat', or 'all'/'moderation'.",
                 },
                 "enabled": {
                     "type": "boolean",
-                    "description": "True to enable/turn on (hidupkan/aktifkan), False to disable/turn off (matikan/nonaktifkan).",
+                    "description": "CRITICAL: false if user asks to turn off / disable / matikan / nonaktifkan; true if user asks to turn on / enable / hidupkan / aktifkan.",
                 },
             },
             "required": ["feature", "enabled"],
@@ -432,6 +454,140 @@ TOOLS = [
         },
     },
     {
+        "name": "send_channel_message",
+        "description": "Send a text message to a specific channel or the current channel (channel message) using SDK. Use this when a user asks to send a channel message, chat to a channel, or post in a channel, NOT broadcast_message. Sensitive: requires admin privileges.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The message content to send to the channel.",
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "Optional destination channel name or path. If omitted or 'sini'/'channel ini', defaults to the channel where the user asked.",
+                },
+            },
+            "required": ["message"],
+        },
+    },
+    {
+        "name": "send_private_message",
+        "description": "Send a private message (PM) from the bot to one or more users by nickname(s) using SDK. Sensitive: requires admin privileges.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "nickname": {
+                    "type": "string",
+                    "description": "The nickname(s) of the user(s) to receive the message.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The private message content to send.",
+                },
+            },
+            "required": ["nickname", "message"],
+        },
+    },
+    {
+        "name": "create_channel",
+        "description": "Create a new channel on the TeamTalk server using SDK doMakeChannel. Sensitive: requires admin privileges.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The name of the new channel.",
+                },
+                "parent_channel": {
+                    "type": "string",
+                    "description": "Optional parent channel name or path (defaults to root).",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "Optional channel topic or description.",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Optional password to protect the channel.",
+                },
+                "max_users": {
+                    "type": "integer",
+                    "description": "Optional maximum number of users allowed in the channel.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "delete_channel",
+        "description": "Delete a channel from the TeamTalk server by name or path using SDK doRemoveChannel. Sensitive: requires admin privileges.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "channel": {
+                    "type": "string",
+                    "description": "The channel name or path to delete.",
+                },
+            },
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "list_channel_users",
+        "description": "List all users currently inside a specific channel using SDK getChannelUsers.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "channel": {
+                    "type": "string",
+                    "description": "The channel name or path to inspect.",
+                },
+            },
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "list_channel_files",
+        "description": "List uploaded files in a specific channel using SDK getChannelFiles.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "channel": {
+                    "type": "string",
+                    "description": "The channel name or path.",
+                },
+            },
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "get_server_properties",
+        "description": "Get TeamTalk server properties such as server name, MOTD, and maximum user capacity using SDK getServerProperties.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "kick_channel_users",
+        "description": "Kick all users inside a specific channel from the server using SDK. Sensitive: requires admin privileges.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "channel": {
+                    "type": "string",
+                    "description": "The channel name or path whose users should be kicked.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason for kicking the channel's users.",
+                },
+            },
+            "required": ["channel"],
+        },
+    },
+    {
         "name": "get_bot_info",
         "description": "Get general information about the bot, version, and supported capabilities.",
         "parameters": {
@@ -533,7 +689,7 @@ class AIChat:
             self._jobs.task_done()
 
     def _extract_tool_calls(self, result: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
-        """Extract tool calls from Workers AI result payload or generated text."""
+        """Extract valid tool calls from Workers AI result payload or generated text."""
         if not isinstance(result, dict):
             return None
         tool_calls = result.get("tool_calls")
@@ -542,29 +698,35 @@ class AIChat:
         if not tool_calls and isinstance(result.get("choices"), list) and result["choices"]:
             tool_calls = result["choices"][0].get("message", {}).get("tool_calls")
 
+        known_tools = {t["name"] for t in TOOLS}
+        aliases = {
+            "pm_user": "send_private_message",
+            "channel_message": "send_channel_message",
+        }
+
         if tool_calls and isinstance(tool_calls, list):
             parsed_calls = []
             for call in tool_calls:
                 name = call.get("name")
                 if not name and isinstance(call.get("function"), dict):
                     name = call["function"].get("name")
+                if name in aliases:
+                    name = aliases[name]
                 args = call.get("arguments", {})
                 if isinstance(args, str):
                     try:
                         args = json.loads(args)
                     except Exception:
                         args = {}
-                if name:
+                if name and name in known_tools:
                     parsed_calls.append({"name": name, "arguments": args, "id": call.get("id") or "call_1"})
             if parsed_calls:
                 return parsed_calls
 
         # Fallback: check text for tool call patterns
         raw_text = result.get("response") if isinstance(result, dict) else ""
-        known_tools = {t["name"] for t in TOOLS}
         if isinstance(raw_text, str) and (
-            any(t in raw_text for t in known_tools)
-            or any(kw in raw_text for kw in ('"name"', '"function"', '"tool"', '"action"'))
+            any(t in raw_text for t in known_tools) or "pm_user" in raw_text or "channel_message" in raw_text
         ):
             decoder = json.JSONDecoder()
             idx = 0
@@ -581,13 +743,15 @@ class AIChat:
                             if extracted:
                                 return extracted
                         t_name = obj.get("name") or obj.get("function") or obj.get("tool") or obj.get("action")
+                        if t_name in aliases:
+                            t_name = aliases[t_name]
                         t_args = obj.get("arguments") or obj.get("parameters") or {}
                         if isinstance(t_args, str):
                             try:
                                 t_args = json.loads(t_args)
                             except Exception:
                                 t_args = {}
-                        if t_name:
+                        if t_name and t_name in known_tools:
                             return [{"name": t_name, "arguments": t_args, "id": "call_1"}]
                     idx = start_brace + max(1, end_pos)
                 except Exception:
@@ -595,13 +759,16 @@ class AIChat:
         return None
 
     def answer(self, question: str, history: List[Tuple[str, str]], context: Any = None) -> str:
-        """Ask the model and return its cleaned answer; handles function calls."""
+        """Ask the model and return its cleaned answer; AI decides whether to call tools."""
         system_content = SYSTEM_PROMPT
         if isinstance(context, dict):
             extra = []
             req_nick = context.get("nickname") or "Pengguna"
-            chan_name = context.get("channel_name") or f"channel {context.get('channel')}"
-            extra.append(f"Penanya: {req_nick} (berada di channel: {chan_name}).")
+            is_pm = bool(context.get("is_pm"))
+            if is_pm:
+                extra.append(f"Penanya: {req_nick} (mengirim pertanyaan via Private Message / PM, sedang berada di channel: {chan_name}).")
+            else:
+                extra.append(f"Penanya: {req_nick} (berada di channel: {chan_name}).")
             if context.get("online_users"):
                 extra.append(f"Pengguna online: {', '.join(context['online_users'][:30])}.")
             if context.get("channels"):
@@ -615,12 +782,14 @@ class AIChat:
             messages.append({"role": "assistant", "content": earlier_answer})
         messages.append({"role": "user", "content": question})
 
-        body = {
+        body: Dict[str, Any] = {
             "messages": messages,
             "tools": TOOLS,
+            "tool_choice": "auto",
             "max_tokens": self._max_tokens,
             "temperature": 0.4,
         }
+
         try:
             payload = call_workers_ai(
                 self._api_url,
@@ -633,6 +802,7 @@ class AIChat:
         except Exception:
             # Fallback without tools if model/endpoint dislikes tools parameter
             body.pop("tools", None)
+            body.pop("tool_choice", None)
             payload = call_workers_ai(
                 self._api_url,
                 self._account_id,
@@ -741,4 +911,59 @@ class AIChat:
         text = clean_answer(result.get("response") if isinstance(result, dict) else "")
         if not text:
             raise ValueError("empty answer from the model")
+
+        # Safety check: if model mistakenly returned a function refusal on a general knowledge question
+        refusal_phrases = (
+            "belum ada function",
+            "fungsi itu belum ada",
+            "fitur itu belum ada",
+            "fitur itu belum tersedia",
+            "belum ada fitur",
+            "fungsi tersebut belum ada",
+            "belum tersedia di bot ini",
+        )
+        text_lower = text.lower()
+        if any(phrase in text_lower for phrase in refusal_phrases):
+            explicit_unsupported_commands = (
+                "putar lagu", "setel lagu", "putar musik", "setel musik", "play lagu", "play musik",
+                "pesan makanan", "pesen makanan", "order makanan", "gofood", "grabfood",
+                "restart", "reboot", "shutdown",
+            )
+            is_unsupported_command = any(cmd in question.lower() for cmd in explicit_unsupported_commands)
+            if not is_unsupported_command:
+                logger.warning("Model answered with function refusal for general query: %s. Retrying pure QA.", question)
+                try:
+                    qa_messages = [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Kamu adalah asisten AI ramah dan cerdas khas Gen Z untuk siswa tunanetra di TeamTalk. "
+                                "Gunakan bahasa Indonesia santai ('aku' dan 'kamu'). "
+                                "Jawab pertanyaan pengguna berikut ini secara langsung, pintar, dan informatif. "
+                                "Plain text ONLY: dilarang menggunakan format Markdown (tanpa bintang, pagar, strip) dan dilarang menggunakan emoji. "
+                                "Maksimal 4 kalimat. Ini adalah pertanyaan pengetahuan umum/obrolan biasa, BUKAN perintah fungsi server."
+                            ),
+                        },
+                        {"role": "user", "content": question},
+                    ]
+                    qa_payload = call_workers_ai(
+                        self._api_url,
+                        self._account_id,
+                        self._api_token,
+                        self.model,
+                        {
+                            "messages": qa_messages,
+                            "max_tokens": self._max_tokens,
+                            "temperature": 0.4,
+                        },
+                        self._timeout,
+                    )
+                    if qa_payload.get("success", True):
+                        qa_res = qa_payload.get("result") or {}
+                        qa_ans = clean_answer(qa_res.get("response") if isinstance(qa_res, dict) else "")
+                        if qa_ans:
+                            return qa_ans
+                except Exception as exc:
+                    logger.warning("Pure QA retry failed: %s", exc)
+
         return text

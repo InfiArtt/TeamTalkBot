@@ -75,29 +75,35 @@ messages are included, so mention the check in the server rules.
 Switch it off again any time with `/abt ai off`; ambiguous words are then
 counted immediately, as before.
 
-## Ask the AI in a channel (@ai)
+## Ask the AI in a channel or private message (@ai / /ai)
 
-Anyone can start a channel message with `@ai` followed by a question:
+Anyone can start a channel message or send a private message (PM) to the bot with `@ai` or `/ai` followed by a question:
 
 ```
 @ai apa itu fotosintesis?
 ```
 
-The bot answers **in that channel** (as an admin it does not need to join
-it), so everyone there hears the answer:
+- When asked **in a channel**, the bot answers in that channel (as an admin it does not need to join it) so everyone there hears the answer:
 
 ```
 [AI] untuk Siti: Fotosintesis adalah ... 
 AI bisa salah. Periksa kembali info penting.
 ```
 
+- When asked **via private message (PM)**, the bot answers directly in PM without the nickname prefix:
+
+```
+[AI]: Fotosintesis adalah ...
+AI bisa salah. Periksa kembali info penting.
+```
+
 - Answers are short plain text in the language of the question, with no
   Markdown or emoji, because screen readers read symbols aloud.
 - The AI remembers the last `AI_CHAT_HISTORY` (default 3) questions and
-  answers of that channel from the last 10 minutes, so follow-ups such as
-  `@ai jelasin lebih simpel` work. Nicknames are not sent to the AI.
+  answers of that channel (or privately per user for PMs) from the last 10 minutes, so follow-ups such as
+  `@ai jelasin lebih simpel` work seamlessly. Nicknames are not sent to the AI.
 - `@ai` must be followed by a space, `:` or `,`: `@aisyah halo` is not a
-  question. Private messages starting with `@ai` are not answered.
+  question. In PM, `/ai <pertanyaan>` is also supported.
 - Limits: one question per person every `AI_CHAT_COOLDOWN_SEC` (default 20)
   seconds and `AI_CHAT_DAILY_LIMIT` (default 200) questions per day for the
   whole server; people who hit a limit are told privately.
@@ -122,7 +128,8 @@ Users can request actions in natural conversation without remembering manual sla
 The AI automatically invokes tools executed safely on the bot's main thread:
 - `toggle_moderation_feature`: enable or disable moderation features (`word_filter` / `badwords`, `spam`, `login`, `join`, `profile`, `pm`, `ai`, `aichat`, or `all`/`moderation` for all features at once) (sensitive, requires admin).
 - `get_moderation_status`: check current ON/OFF status of all moderation features (sensitive, requires admin).
-- `kick_user`: kick a user by nickname (sensitive, requires admin).
+- `kick_user`: kick one or more users by nickname (e.g. `@ai kick budi dan tono`) (sensitive, requires admin).
+- `kick_channel_users`: kick all users inside a specific channel from the server (sensitive, requires admin).
 - `ban_user`: permanently ban a user by nickname (sensitive, requires admin).
 - `temp_ban_user`: temporarily ban a user for X minutes (sensitive, requires admin).
 - `unban_user`: unban a user by username or IP (sensitive, requires admin).
@@ -131,7 +138,14 @@ The AI automatically invokes tools executed safely on the bot's main thread:
 - `delete_badword`: remove word(s) from the word filter (sensitive, requires admin).
 - `list_badwords`: list or search words in the word filter (sensitive, requires admin).
 - `list_bans`: view active temporary bans (sensitive, requires admin).
-- `move_user`: move a user to another channel (sensitive, requires admin).
+- `move_user`: move one or more users to another channel (supports single user, comma-separated names, "dan", or "semua") (sensitive, requires admin).
+- `move_channel_users`: move all users from a source channel to another channel (e.g. `@ai pindahin semua user yang ada di pelatihan komputer ke aula dong`) (sensitive, requires admin).
+- `send_private_message` (alias: `pm_user`): send a private message from the bot to one or more users (sensitive, requires admin).
+- `create_channel`: create a new channel with audio settings and defaults using SDK `doMakeChannel` (sensitive, requires admin).
+- `delete_channel`: remove a channel using SDK `doRemoveChannel` (sensitive, requires admin).
+- `list_channel_users`: list users inside a specific channel using SDK `getChannelUsers` (available to everyone).
+- `list_channel_files`: list uploaded files in a channel using SDK `getChannelFiles` (available to everyone).
+- `get_server_properties`: view server name, MOTD, and maximum user capacity from SDK `getServerProperties` (available to everyone).
 - `change_bot_status`: update the bot's status message (sensitive, requires admin).
 - `list_online_users`: list online users and their channels (available to everyone).
 - `list_channels`: list server channels (available to everyone).
@@ -142,13 +156,15 @@ The AI automatically invokes tools executed safely on the bot's main thread:
 - `leave_channel`: make the bot leave its current channel and return to root using SDK (sensitive, requires admin).
 - `set_channel_operator`: grant or revoke Channel Operator (ChanOp) status for a user using SDK `doChannelOpEx` (sensitive, requires admin).
 - `get_channel_info`: view technical channel settings (topic, max users, password protection) from SDK `getChannel` (available to everyone).
-- `get_user_info`: view user profile details from SDK `getUser` (available to everyone; sensitive fields like IP are admin only).
-- `broadcast_message`: broadcast an announcement message across the server using SDK `TextMsgType.MSGTYPE_BROADCAST` (sensitive, requires admin).
+- `send_channel_message` (alias: `channel_message`): send a text message to a specific channel or the current channel using SDK `TextMsgType.MSGTYPE_CHANNEL` (sensitive, requires admin).
+- `broadcast_message`: broadcast an announcement message across the server using SDK `TextMsgType.MSGTYPE_BROADCAST` (sensitive, requires admin; strictly reserved for server-wide broadcasts, never used for channel messages).
 - `get_bot_info`: get bot version and supported features (available to everyone).
 
-**Admin permissions**: Sensitive actions strictly check the requester's `uUserType & UserType.USERTYPE_ADMIN`. If a non-admin requests a restricted action (like kicking, moving, or disabling moderation), permission is denied and the AI replies in its friendly Gen Z persona (for example: *"Woi kamu bukan admin bro, gak boleh aneh-aneh ya"*).
+**Admin permissions**: Sensitive actions strictly check the requester's `uUserType & UserType.USERTYPE_ADMIN`. If a non-admin requests a restricted action (like kicking, moving, private messaging, creating/deleting channels, or disabling moderation), permission is denied and the AI replies in its friendly Gen Z persona (for example: *"Woi kamu bukan admin bro, gak boleh aneh-aneh ya"*).
 
-**Unrecognized or unsupported commands**: If a user asks the AI to perform a task or action that does not have a corresponding function in the bot (for example: playing songs, ordering food, restarting servers), the AI does not hallucinate or guess; it politely informs the user in its Gen Z persona that the function is not yet available (for example: *"Wah kayaknya belum ada deh function buat itu di bot ini"*).
+**General questions & casual chat**: General knowledge questions (science, history, trivia, riddles, school subjects, daily conversation) are always answered directly, naturally, and supportively. The bot never checks for functions or says functions are missing for general conversation.
+
+**Unrecognized or unsupported commands**: ONLY if a user explicitly gives a command or asks the bot to execute a server/bot action that does not exist (for example: commanding the bot to play music, order food, or restart servers), the AI politely informs the user in its Gen Z persona that the function is not yet available (for example: *"Wah kayaknya belum ada deh function buat itu di bot ini"*).
 
 **Live Server Context & Fuzzy Lookups**:
 - **Server snapshot injection**: When answering `@ai`, the bot injects real-time context into the AI's prompt: requester nickname, requester's current channel, online users and their channels, and the server channel list.
