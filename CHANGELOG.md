@@ -6,6 +6,7 @@ The format is based on [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 ### Added
+- Optional AI context check (`ai_review.py`, Cloudflare Workers AI): when every badword in a message is an ambiguous one (`AI_AMBIGUOUS_WORDS`, e.g. anjing, babi, tahi, telanjang, gay), the bot asks the AI whether it was an insult instead of counting it right away, so "anjing tetanggaku berisik" is not punished but "anjing lah" is. The AI also sees up to `AI_CONTEXT_MESSAGES` earlier messages and two follow-ups (kept in memory only, without names), so a lone "anjing" after "aku punya binatang baru" is read as the pet. Runs in the background; if the AI does not answer the message is not counted. Off by default, switched with `/abt ai` (refused until the credentials are in `config.json`); `/bwt` shows the AI's verdict; `tools/ai_eval.py` measures a model on 38 labelled sentences. Setup: `docs/ai.md`.
 - GitHub Actions workflow (`.github/workflows/deploy.yml`): pull requests into `main` are checked (all Python files must compile), and merging into `main` updates and restarts the bot on the server over SSH through `tools/deploy.sh`, using a key that can only run that script. Setup: `docs/deploy.md`.
 
 ### Fixed

@@ -126,6 +126,20 @@ BADWORDS_WARNINGS: List[str] = [
     "Second warning: continued offensive language will get you kicked.",
     "Third warning: you will be temporarily banned for {duration} minutes for continued offensive language.",
 ]
+AI_ENABLED: bool = False
+AI_CLOUDFLARE_ACCOUNT_ID: str = ""
+AI_CLOUDFLARE_API_TOKEN: str = ""
+AI_MODEL: str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+AI_TIMEOUT_SEC: int = 10
+# Earlier messages from the same conversation sent along as context (0 = none)
+AI_CONTEXT_MESSAGES: int = 4
+# Badword entries with an ordinary meaning too; when every match in a message
+# is one of these, the AI decides whether it was an insult
+AI_AMBIGUOUS_WORDS: List[str] = [
+    "anjing", "anjeng", "anying", "asu", "babi", "monyet", "kunyuk", "kampret*",
+    "bangke", "tai", "tahi", "edan", "telanjang", "bugil*", "seks", "porno", "porn",
+    "masturbasi", "ejakulasi", "senggama", "gay", "lesbi",
+]
 ANTISPAM_MESSAGE_ENABLED: bool = True
 ANTISPAM_MESSAGE_COUNT: int = 7
 ANTISPAM_MESSAGE_WINDOW_SEC: int = 10
@@ -199,6 +213,13 @@ DEFAULTS: Dict[str, Any] = {
     "BADWORDS_PROFILE_CHECK_ENABLED": BADWORDS_PROFILE_CHECK_ENABLED,
     "BADWORD_ABUSE_COUNT": BADWORD_ABUSE_COUNT,
     "BADWORDS_WARNINGS": BADWORDS_WARNINGS,
+    "AI_ENABLED": AI_ENABLED,
+    "AI_CLOUDFLARE_ACCOUNT_ID": AI_CLOUDFLARE_ACCOUNT_ID,
+    "AI_CLOUDFLARE_API_TOKEN": AI_CLOUDFLARE_API_TOKEN,
+    "AI_MODEL": AI_MODEL,
+    "AI_TIMEOUT_SEC": AI_TIMEOUT_SEC,
+    "AI_CONTEXT_MESSAGES": AI_CONTEXT_MESSAGES,
+    "AI_AMBIGUOUS_WORDS": AI_AMBIGUOUS_WORDS,
     "ANTISPAM_MESSAGE_ENABLED": ANTISPAM_MESSAGE_ENABLED,
     "ANTISPAM_MESSAGE_COUNT": ANTISPAM_MESSAGE_COUNT,
     "ANTISPAM_MESSAGE_WINDOW_SEC": ANTISPAM_MESSAGE_WINDOW_SEC,
