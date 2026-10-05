@@ -4048,11 +4048,8 @@ class BotClient(TeamTalk):
             }
 
         elif tool_name == "get_bot_info":
-            ver = getattr(config, "VERSION", "1.1.2")
-            try:
-                tt_ver = tt5.getVersion() if hasattr(tt5, "getVersion") else "5.x"
-            except Exception:
-                tt_ver = "5.x"
+            info = version.collect_version_info()
+            ver, tt_ver = info["bot_version"], info["sdk_version"]
             return {
                 "status": "success",
                 "message": f"Aku bot TeamTalk untuk membantu teman-teman di server ini. Versi bot {ver}, TeamTalk SDK {tt_ver}. Fitur yang tersedia: moderasi otomatis, deteksi spam, filter kata kasar, manajemen channel, dan bantuan cerdas melalui @ai.",
