@@ -115,6 +115,34 @@ AI bisa salah. Periksa kembali info penting.
 - In classroom channels the server may refuse the bot's answer unless the
   bot is allowed to write there.
 
+### Natural language commands & function calling
+
+Users can request actions in natural conversation without remembering manual slash commands (for example: `@ai matiin word filter dong`, `@ai matiin moderation`, `@ai kick orang yang namanya kak fian dong`, or `@ai siapa aja yang lagi online?`).
+
+The AI automatically invokes tools executed safely on the bot's main thread:
+- `toggle_moderation_feature`: enable or disable moderation features (`word_filter` / `badwords`, `spam`, `login`, `join`, `profile`, `pm`, `ai`, `aichat`, or `all`/`moderation` for all features at once) (sensitive, requires admin).
+- `get_moderation_status`: check current ON/OFF status of all moderation features (sensitive, requires admin).
+- `kick_user`: kick a user by nickname (sensitive, requires admin).
+- `ban_user`: permanently ban a user by nickname (sensitive, requires admin).
+- `temp_ban_user`: temporarily ban a user for X minutes (sensitive, requires admin).
+- `unban_user`: unban a user by username or IP (sensitive, requires admin).
+- `forgive_user`: clear warnings and lift temp bans for a user or all users (sensitive, requires admin).
+- `add_badword`: add word(s) to the word filter (sensitive, requires admin).
+- `delete_badword`: remove word(s) from the word filter (sensitive, requires admin).
+- `list_badwords`: list or search words in the word filter (sensitive, requires admin).
+- `list_bans`: view active temporary bans (sensitive, requires admin).
+- `move_user`: move a user to another channel (sensitive, requires admin).
+- `change_bot_status`: update the bot's status message (sensitive, requires admin).
+- `list_online_users`: list online users and their channels (available to everyone).
+- `list_channels`: list server channels (available to everyone).
+- `find_user`: locate a user and see what channel they are in and their status (available to everyone).
+- `check_channel_owner`: check the owner of a channel (available to everyone).
+- `get_bot_info`: get bot version and supported features (available to everyone).
+
+**Admin permissions**: Sensitive actions strictly check the requester's `uUserType & UserType.USERTYPE_ADMIN`. If a non-admin requests a restricted action (like kicking, moving, or disabling moderation), permission is denied and the AI replies in its friendly Gen Z persona (for example: *"Woi kamu bukan admin bro, gak boleh aneh-aneh ya"*).
+
+**Unrecognized or unsupported commands**: If a user asks the AI to perform a task or action that does not have a corresponding function in the bot (for example: playing songs, ordering food, restarting servers), the AI does not hallucinate or guess; it politely informs the user in its Gen Z persona that the function is not yet available (for example: *"Wah kayaknya belum ada deh function buat itu di bot ini"*).
+
 Setup: the same Cloudflare keys as above, then `/abt aichat on` (off by
 default). Other settings: `AI_CHAT_PREFIX` (default `@ai`), `AI_CHAT_MODEL`
 (empty: same as `AI_MODEL`), `AI_CHAT_MAX_TOKENS` (default 300),
@@ -122,3 +150,4 @@ default). Other settings: `AI_CHAT_PREFIX` (default `@ai`), `AI_CHAT_MODEL`
 `AI_CHAT_BLOCKED_MESSAGE` and `AI_CHAT_DISCLAIMER` (the line after every
 answer; empty to leave it out).
 Users can read `/help ai`.
+
