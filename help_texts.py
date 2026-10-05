@@ -189,7 +189,8 @@ HELP_TOPICS = {
         "that channel, so you can ask follow-up questions. The AI can make mistakes: check "
         "important information.\n"
         "Only works when the admins have switched it on (/abt aichat). There is a short wait "
-        "between your questions and a daily limit for the server.\n"
+        "between your questions and a daily limit for the server. A question with a badword "
+        "gets the usual warning and is not answered.\n"
         "Example:\n"
         "  @ai apa itu fotosintesis?\n"
         "  @ai jelasin lebih simpel\n",

@@ -204,6 +204,9 @@ class BotClient(TeamTalk):
         self._message_seq = 0
         # (conversation, seq) of the message being handled right now
         self._current_message: Optional[Tuple[tuple, int]] = None
+        # The "@ai" question in that message, if any; a badword in it holds the
+        # answer back (see handle_badword_text)
+        self._current_ai_question: Optional[dict] = None
         # "@ai <question>" in a channel (see /abt aichat)
         self._ai_chat = AIChat(
             getattr(config, "AI_CLOUDFLARE_ACCOUNT_ID", ""),
@@ -935,6 +938,21 @@ class BotClient(TeamTalk):
                 return
             from_uid = textmessage.nFromUserID
             self._current_message = self._remember_message(textmessage, message_text)
+            self._current_ai_question = None
+            if (
+                textmessage.nMsgType == TextMsgType.MSGTYPE_CHANNEL
+                and from_uid != (self.getMyUserID() or 0)
+                and self._ai_chat_active()
+            ):
+                question = self._ai_chat_question(message_text)
+                if question is not None:
+                    # The badword check below may hold the answer back
+                    self._current_ai_question = {
+                        "userid": from_uid,
+                        "channel": int(textmessage.nChannelID),
+                        "question": question,
+                        "held": False,
+                    }
             # Filter bad words in channel / broadcast messages if configured
             if textmessage.nMsgType != TextMsgType.MSGTYPE_USER:
                 if self._bw_enabled():
@@ -963,14 +981,9 @@ class BotClient(TeamTalk):
                         "BROADCAST" in spam_types
                     ):
                         self._handle_abuse_message(from_uid, self._get_user_ip(from_uid))
-                if textmessage.nMsgType == TextMsgType.MSGTYPE_CHANNEL:
-                    question = self._ai_chat_question(message_text)
-                    if (
-                        question is not None
-                        and self._ai_chat_active()
-                        and from_uid != (self.getMyUserID() or 0)
-                    ):
-                        self._handle_ai_question(from_uid, int(textmessage.nChannelID), question)
+                ask = self._current_ai_question
+                if ask and not ask["held"]:
+                    self._handle_ai_question(ask["userid"], ask["channel"], ask["question"])
                 return
             from_user = textmessage.nFromUserID
             content = message_text.strip()
@@ -1133,6 +1146,7 @@ class BotClient(TeamTalk):
             safe_call(self.send_pm, textmessage.nFromUserID, f"An error occurred: {e}")
         finally:
             self._current_message = None
+            self._current_ai_question = None
             # The message may have opened or closed a prompt
             safe_call(self._sync_prompt_intercepts)
 
@@ -2474,10 +2488,22 @@ class BotClient(TeamTalk):
         about their dog.
         """
         ambiguous = self._ambiguous_words()
+        # An "@ai" question with a badword is not answered; while the AI checks
+        # an ambiguous one the answer waits for its verdict
+        ask = self._current_ai_question
+        if ask:
+            ask["held"] = True
         if self._ai_active() and all(entry in ambiguous for entry in entries):
-            context = {"kind": "violation", "userid": userid, "ip": ip, "entries": list(entries)}
+            context = {
+                "kind": "violation",
+                "userid": userid,
+                "ip": ip,
+                "entries": list(entries),
+                "question": ask,
+            }
             current = self._current_message
-            if current:
+            # Questions are checked at once, so the answer is not delayed
+            if current and not ask:
                 self._schedule_action(
                     self._now() + self._AI_CONTEXT_WAIT_SEC,
                     self._submit_ai_review,
@@ -2487,7 +2513,7 @@ class BotClient(TeamTalk):
                     current,
                 )
             else:
-                self._submit_ai_review(content, list(entries), context, None)
+                self._submit_ai_review(content, list(entries), context, current)
             return
         self.handle_badword_violation(userid, ip, "text")
 
@@ -2496,7 +2522,9 @@ class BotClient(TeamTalk):
             self._conversation_around(current, context["userid"]) if current else ([], [])
         )
         userid = context["userid"]
-        if self._ai.submit(content, entries, context, before, after):
+        if self._ai.submit(
+            content, entries, context, before, after, bool(context.get("question"))
+        ):
             logger.info(
                 "AI review requested (user=%s, words=%s, context: %s before, %s after)",
                 userid,
@@ -2506,6 +2534,12 @@ class BotClient(TeamTalk):
             )
         else:
             logger.warning("AI review queue full; not counted (user=%s, words=%s)", userid, entries)
+            self._answer_held_question(context.get("question"))
+
+    def _answer_held_question(self, ask: Optional[dict]):
+        """Answer an "@ai" question whose badword was not counted after all."""
+        if ask and self._ai_chat_active():
+            self._handle_ai_question(ask["userid"], ask["channel"], ask["question"])
 
     # ============ "@ai <question>" in a channel ============
     _AI_CHAT_HISTORY_SEC = 600.0  # earlier questions older than this are forgotten
@@ -2627,10 +2661,12 @@ class BotClient(TeamTalk):
             if verdict == INSULT:
                 logger.info("AI review: insult (user=%s, words=%s)", userid, entries)
                 self.handle_badword_violation(userid, context.get("ip", ""), "text")
-            elif verdict == OK:
+                continue
+            if verdict == OK:
                 logger.info("AI review: not an insult; not counted (user=%s, words=%s)", userid, entries)
             else:
                 logger.warning("AI review unavailable; not counted (user=%s, words=%s)", userid, entries)
+            self._answer_held_question(context.get("question"))
 
     def handle_badword_violation(self, userid: int, ip: str, context: str):
         try:
