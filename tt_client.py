@@ -2627,7 +2627,13 @@ class BotClient(TeamTalk):
         ]
         user = safe_call(self.getUser, userid)
         nickname = from_tt_char(user.szNickname).strip() if user is not None else ""
-        context = {"userid": userid, "channel": channel_id, "nickname": nickname, "question": question}
+        context = {
+            "userid": userid,
+            "channel": channel_id,
+            "nickname": nickname,
+            "question": question,
+            "is_admin": self._is_admin(userid),
+        }
         if not self._ai_chat.ask(question, history, context):
             safe_call(self.send_pm, userid, "AI sedang sibuk, coba lagi sebentar lagi.")
             return
@@ -2678,6 +2684,632 @@ class BotClient(TeamTalk):
                 )
         except Exception:
             logger.exception("Failed to send a message to channel %s", channel_id)
+
+    def _find_users_by_nickname_fuzzy(self, name: str) -> List[User]:
+        clean_name = str(name or "").strip().lower()
+        if not clean_name:
+            return []
+        users = self.getServerUsers()
+        # 1. Exact match
+        exact = [u for u in users if from_tt_char(u.szNickname).strip().lower() == clean_name]
+        if exact:
+            return exact
+        # 2. Match without honorifics/prefixes like "kak ", "bang ", "mas ", "pak ", "bu "
+        without_prefix = re.sub(r"^(kak|bang|mas|pak|bu|om|tante)\s+", "", clean_name).strip()
+        if without_prefix and without_prefix != clean_name:
+            prefix_match = [
+                u for u in users if from_tt_char(u.szNickname).strip().lower() == without_prefix
+            ]
+            if prefix_match:
+                return prefix_match
+        # 3. Substring match
+        partial = [
+            u for u in users
+            if clean_name in from_tt_char(u.szNickname).strip().lower()
+            or from_tt_char(u.szNickname).strip().lower() in clean_name
+            or (without_prefix and without_prefix in from_tt_char(u.szNickname).strip().lower())
+        ]
+        if partial:
+            return partial
+        return []
+
+    def _find_channel_id(self, target: str) -> Optional[int]:
+        target_str = str(target or "").strip()
+        if not target_str:
+            return None
+        # Try direct path or normalized path
+        for p in (target_str, self._normalize_channel_target_to_path(target_str)):
+            try:
+                cid = self.getChannelIDFromPath(p)
+                if cid and cid > 0:
+                    return cid
+            except Exception:
+                pass
+        # Search all channels by name or path
+        try:
+            target_lower = target_str.lower().strip("/")
+            clean_chan = re.sub(r"^channel\s+", "", target_lower).strip()
+            for ch in self.getServerChannels():
+                name = from_tt_char(ch.szName).lower().strip()
+                path = (self.getChannelPath(ch.nChannelID) or "").lower().strip("/")
+                if clean_chan in (name, path) or path.endswith(f"/{clean_chan}"):
+                    return ch.nChannelID
+        except Exception:
+            pass
+        return None
+
+    def _execute_ai_tool(self, tool_name: str, tool_args: dict, context: Any) -> Dict[str, Any]:
+        requester_id = context.get("userid", 0) if isinstance(context, dict) else 0
+        is_admin = self._is_admin(requester_id)
+
+        if tool_name == "kick_user":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh kick orang.",
+                }
+            nickname = str(tool_args.get("nickname") or "").strip()
+            reason = str(tool_args.get("reason") or "").strip()
+            targets = self._find_users_by_nickname_fuzzy(nickname)
+            if not targets:
+                return {
+                    "status": "error",
+                    "error": "USER_NOT_FOUND",
+                    "message": f"User '{nickname}' tidak ditemukan di server.",
+                }
+            myid = self.getMyUserID() or 0
+            kicked = []
+            for u in targets:
+                if u.nUserID == myid:
+                    continue
+                nick = from_tt_char(u.szNickname)
+                if reason:
+                    safe_call(self.send_pm, u.nUserID, reason)
+                kicked.append(nick)
+                self._schedule_action(
+                    self._now() + 0.1,
+                    self._execute_manual_kick,
+                    u.nUserID,
+                    requester_id,
+                    nick,
+                    reason,
+                    True,
+                )
+            if not kicked:
+                return {"status": "error", "message": "Tidak bisa menendang bot sendiri."}
+            return {
+                "status": "success",
+                "message": f"User {', '.join(kicked)} berhasil ditendang dari server.",
+            }
+
+        elif tool_name == "ban_user":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh ban orang.",
+                }
+            nickname = str(tool_args.get("nickname") or "").strip()
+            reason = str(tool_args.get("reason") or "").strip()
+            targets = self._find_users_by_nickname_fuzzy(nickname)
+            if not targets:
+                return {
+                    "status": "error",
+                    "error": "USER_NOT_FOUND",
+                    "message": f"User '{nickname}' tidak ditemukan di server.",
+                }
+            mode = str(getattr(config, "BAN_TARGET", "USERNAME")).upper()
+            ban_type = BanType.BANTYPE_USERNAME if mode == "USERNAME" else BanType.BANTYPE_IPADDR
+            myid = self.getMyUserID() or 0
+            banned = []
+            for u in targets:
+                if u.nUserID == myid:
+                    continue
+                who = from_tt_char(u.szUsername) if mode == "USERNAME" else from_tt_char(u.szIPAddress)
+                nick = from_tt_char(u.szNickname)
+                if reason:
+                    safe_call(self.send_pm, u.nUserID, reason)
+                banned.append(nick)
+                self._schedule_action(
+                    self._now() + 0.1,
+                    self._execute_manual_ban,
+                    u.nUserID,
+                    requester_id,
+                    int(ban_type),
+                    who,
+                    nick,
+                    reason,
+                    True,
+                )
+            if not banned:
+                return {"status": "error", "message": "Tidak bisa memblokir bot sendiri."}
+            return {
+                "status": "success",
+                "message": f"User {', '.join(banned)} berhasil diblokir dari server.",
+            }
+
+        elif tool_name == "move_user":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh mindahin orang.",
+                }
+            nickname = str(tool_args.get("nickname") or "").strip()
+            channel_target = str(tool_args.get("channel") or "").strip()
+            targets = self._find_users_by_nickname_fuzzy(nickname)
+            if not targets:
+                return {
+                    "status": "error",
+                    "error": "USER_NOT_FOUND",
+                    "message": f"User '{nickname}' tidak ditemukan di server.",
+                }
+            cid = self._find_channel_id(channel_target)
+            if not cid:
+                return {
+                    "status": "error",
+                    "error": "CHANNEL_NOT_FOUND",
+                    "message": f"Channel '{channel_target}' tidak ditemukan di server.",
+                }
+            moved = []
+            for u in targets:
+                self.doMoveUser(u.nUserID, cid)
+                moved.append(from_tt_char(u.szNickname))
+            chan_name = self.getChannelPath(cid) or str(cid)
+            return {
+                "status": "success",
+                "message": f"User {', '.join(moved)} berhasil dipindahkan ke channel {chan_name}.",
+            }
+
+        elif tool_name == "list_online_users":
+            users = self.getServerUsers()
+            online = []
+            for u in users:
+                nick = from_tt_char(u.szNickname)
+                if nick:
+                    chan_path = self.getChannelPath(u.nChannelID) or "Root"
+                    online.append(f"{nick} (di channel {chan_path})")
+            return {
+                "status": "success",
+                "users": online,
+                "total": len(online),
+                "message": f"Ada {len(online)} pengguna yang sedang online: {', '.join(online)}." if online else "Tidak ada pengguna lain yang online.",
+            }
+
+        elif tool_name == "list_channels":
+            chans = self.getServerChannels()
+            skip_ids = set() if is_admin else self._hidden_channel_ids(chans)
+            names = []
+            for ch in chans:
+                if ch.nChannelID not in skip_ids:
+                    path = self.getChannelPath(ch.nChannelID) or from_tt_char(ch.szName)
+                    if path:
+                        names.append(path)
+            return {
+                "status": "success",
+                "channels": names[:25],
+                "total": len(names),
+                "message": f"Ada {len(names)} channel di server: {', '.join(names[:20])}.",
+            }
+
+        elif tool_name == "change_bot_status":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh ganti status bot.",
+                }
+            status = str(tool_args.get("status") or "").strip()
+            if not status:
+                return {"status": "error", "message": "Pesan status tidak boleh kosong."}
+            self.doChangeStatus(0, status)
+            return {
+                "status": "success",
+                "message": f"Status bot berhasil diubah menjadi: '{status}'.",
+            }
+
+        elif tool_name == "temp_ban_user":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh ban sementara.",
+                }
+            nickname = str(tool_args.get("nickname") or "").strip()
+            try:
+                minutes = max(1, int(tool_args.get("minutes") or 5))
+            except Exception:
+                minutes = 5
+            reason = str(tool_args.get("reason") or "").strip()
+            targets = self._find_users_by_nickname_fuzzy(nickname)
+            if not targets:
+                return {
+                    "status": "error",
+                    "error": "USER_NOT_FOUND",
+                    "message": f"User '{nickname}' tidak ditemukan di server.",
+                }
+            myid = self.getMyUserID() or 0
+            banned = []
+            delay = 1.0 if reason else 0.05
+            for u in targets:
+                if u.nUserID == myid:
+                    continue
+                nick = from_tt_char(u.szNickname)
+                if reason:
+                    safe_call(self.send_pm, u.nUserID, f"Kamu di-ban sementara {minutes} menit: {reason}")
+                banned.append(nick)
+                self._schedule_action(
+                    self._now() + delay,
+                    self._execute_manual_temp_ban,
+                    u.nUserID,
+                    from_tt_char(u.szIPAddress),
+                    from_tt_char(u.szUsername),
+                    nick,
+                    int(minutes),
+                    reason,
+                    requester_id,
+                )
+            if not banned:
+                return {"status": "error", "message": "Tidak bisa memblokir bot sendiri."}
+            return {
+                "status": "success",
+                "message": f"User {', '.join(banned)} berhasil di-ban sementara selama {minutes} menit.",
+            }
+
+        elif tool_name == "unban_user":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh unban orang.",
+                }
+            target = str(tool_args.get("target") or "").strip()
+            if not target:
+                return {"status": "error", "message": "Target username atau IP tidak boleh kosong."}
+            by_ip = self._ban_target_is_ip()
+            descs = []
+            if by_ip:
+                cmdid = self.doUnBanUser(target, 0)
+                if cmdid > 0:
+                    self._track_pending_cmd(cmdid, requester_id, f"unban IP '{target}'")
+                    descs.append(target)
+            else:
+                bu = BannedUser()
+                assign_tt_char_array((bu, "szUsername"), target)
+                bu.uBanTypes = BanType.BANTYPE_USERNAME
+                assign_tt_char_array((bu, "szIPAddress"), "")
+                assign_tt_char_array((bu, "szChannelPath"), "")
+                assign_tt_char_array((bu, "szNickname"), "")
+                assign_tt_char_array((bu, "szOwner"), "")
+                cmdid = self.doUnbanUserEx(bu)
+                if cmdid > 0:
+                    self._track_pending_cmd(cmdid, requester_id, f"unban username '{target}'")
+                    descs.append(target)
+            self._forget_temp_ban(target)
+            if descs:
+                return {
+                    "status": "success",
+                    "message": f"Unban untuk '{target}' berhasil diproses ke server.",
+                }
+            return {
+                "status": "error",
+                "message": f"Gagal memproses unban untuk '{target}'.",
+            }
+
+        elif tool_name == "toggle_moderation_feature":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh ngatur fitur moderasi.",
+                }
+            feat_raw = str(tool_args.get("feature") or "").strip().lower()
+            enabled = bool(tool_args.get("enabled", True))
+            action_str = "diaktifkan" if enabled else "dinonaktifkan"
+            if feat_raw in ("all", "moderation", "semua", "semua moderasi", "semua fitur"):
+                target_features = ["login", "join", "spam", "badwords", "profile", "pm"]
+                for f in target_features:
+                    self._set_feature(f, enabled)
+                return {
+                    "status": "success",
+                    "message": f"Semua fitur moderasi (login, join, spam, badwords, profile, pm) berhasil {action_str}.",
+                }
+
+            mapping = {
+                "word_filter": "badwords",
+                "word filter": "badwords",
+                "filter kata": "badwords",
+                "filter_kata": "badwords",
+                "badword": "badwords",
+                "badwords": "badwords",
+                "antispam": "spam",
+                "anti spam": "spam",
+                "anti_spam": "spam",
+                "spam": "spam",
+                "login": "login",
+                "join": "join",
+                "profile": "profile",
+                "pm": "pm",
+                "ai": "ai",
+                "aichat": "aichat",
+                "ai_chat": "aichat",
+                "chat_ai": "aichat",
+            }
+            target_feat = mapping.get(feat_raw, feat_raw)
+            known_features = {name for name, _desc, _key in self._FEATURES}
+            if target_feat not in known_features:
+                return {
+                    "status": "error",
+                    "error": "FEATURE_NOT_FOUND",
+                    "message": f"Fitur '{feat_raw}' tidak dikenal. Pilihan fitur: word filter (badwords), spam, login, join, profile, pm, ai, aichat, atau all.",
+                }
+
+            if target_feat in self._AI_FEATURES and enabled and not self._ai.configured:
+                return {
+                    "status": "error",
+                    "error": "AI_NOT_CONFIGURED",
+                    "message": "Fitur AI belum dikonfigurasi di config.json.",
+                }
+
+            notes = self._set_feature(target_feat, enabled)
+            desc = dict((n, d) for n, d, _ in self._FEATURES).get(target_feat, target_feat)
+            msg = f"Fitur {desc} ({target_feat}) berhasil {action_str}."
+            if notes:
+                msg += " " + " ".join(notes)
+            return {
+                "status": "success",
+                "message": msg,
+            }
+
+        elif tool_name == "get_moderation_status":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh lihat status moderasi.",
+                }
+            lines = []
+            for name, desc, _ in self._FEATURES:
+                state = "ON" if self._feature_on(name) else "OFF"
+                lines.append(f"{name}: {state}")
+            return {
+                "status": "success",
+                "message": f"Status moderasi server: {', '.join(lines)}.",
+            }
+
+        elif tool_name == "forgive_user":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh memaafkan user.",
+                }
+            target = str(tool_args.get("target") or "").strip().lower()
+            if not target:
+                return {"status": "error", "message": "Target user atau IP harus diisi."}
+            now = self._now()
+            if target in ("all", "semua"):
+                cleared_warnings = 0
+                for kind, key, _stage, _left in self._abuse.active_stages():
+                    self._abuse.reset(kind, key)
+                    self._forgiven[key] = now
+                    cleared_warnings += 1
+                cleared_bans = len(self._temp_bans)
+                for entry in list(self._temp_bans.values()):
+                    if entry.get("key"):
+                        self._forgiven[entry["key"]] = now
+                    self._lift_temp_ban(entry["mode"], entry["label"], entry.get("key", ""), entry.get("kind", ""), True)
+                return {
+                    "status": "success",
+                    "message": f"Semua sanksi berhasil dimaafkan ({cleared_warnings} peringatan direset, {cleared_bans} temp ban dicabut).",
+                }
+
+            items = self._find_abuse_items(target)
+            if not items:
+                users = self._find_users_by_nickname_fuzzy(target)
+                for u in users:
+                    items.extend(self._find_abuse_items(from_tt_char(u.szNickname)))
+                    items.extend(self._find_abuse_items(from_tt_char(u.szUsername)))
+                    items.extend(self._find_abuse_items(from_tt_char(u.szIPAddress)))
+            items = list(dict.fromkeys(items))
+            if not items:
+                return {
+                    "status": "error",
+                    "message": f"Tidak ada peringatan atau temp ban aktif untuk '{target}'.",
+                }
+            done = []
+            for item in items:
+                if item[0] == "warning":
+                    _, kind, key = item
+                    self._abuse.reset(kind, key)
+                    self._forgiven[key] = now
+                    done.append(f"{self._abuse_subject_label(kind, key)} (peringatan {kind} dihapus)")
+                else:
+                    _, mode, label = item
+                    entry = self._temp_bans.get(f"{mode}:{label}")
+                    if entry:
+                        if entry.get("key"):
+                            self._forgiven[entry["key"]] = now
+                        self._lift_temp_ban(mode, label, entry.get("key", ""), entry.get("kind", ""), True)
+                        done.append(f"{entry.get('who') or label} (temp ban dicabut)")
+            return {
+                "status": "success",
+                "message": f"Berhasil dimaafkan: {'; '.join(done)}.",
+            }
+
+        elif tool_name == "add_badword":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh nambah kata kasar.",
+                }
+            raw_words = str(tool_args.get("words") or "").strip()
+            words = self._parse_badword_csv(raw_words)
+            if not words:
+                return {"status": "error", "message": "Kata yang ingin ditambahkan tidak boleh kosong."}
+            errors = [err for err in map(self._badwords.pattern_error, words) if err]
+            added = self._badwords.add_words(words)
+            valid = {w for w in words if not self._badwords.pattern_error(w)}
+            already = sorted(valid - set(added))
+            res_parts = []
+            if added:
+                res_parts.append(f"Kata berhasil ditambahkan: {', '.join(added)}")
+            if already:
+                res_parts.append(f"Sudah ada di daftar: {', '.join(already)}")
+            if errors:
+                res_parts.append(f"Gagal ditambahkan: {', '.join(errors)}")
+            return {
+                "status": "success" if added else "error",
+                "message": ". ".join(res_parts) or "Tidak ada kata yang ditambahkan.",
+            }
+
+        elif tool_name == "delete_badword":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh hapus kata kasar.",
+                }
+            raw_words = str(tool_args.get("words") or "").strip()
+            words = self._parse_badword_csv(raw_words)
+            if not words:
+                return {"status": "error", "message": "Kata yang ingin dihapus tidak boleh kosong."}
+            removed = self._badwords.remove_words(words) if words else []
+            missing = sorted(set(words) - set(removed))
+            res_parts = []
+            if removed:
+                res_parts.append(f"Kata berhasil dihapus dari word filter: {', '.join(removed)}")
+            if missing:
+                res_parts.append(f"Tidak ditemukan di daftar: {', '.join(missing)}")
+            return {
+                "status": "success" if removed else "error",
+                "message": ". ".join(res_parts) or "Tidak ada kata yang dihapus.",
+            }
+
+        elif tool_name == "list_badwords":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh lihat daftar kata terlarang.",
+                }
+            query = str(tool_args.get("query") or "").strip().lower()
+            all_words = self._badwords.list_words()
+            words = [w for w in all_words if query in w] if query else all_words
+            if not words:
+                return {
+                    "status": "success",
+                    "total": 0,
+                    "message": f"Tidak ada kata terlarang yang cocok dengan '{query}'." if query else "Daftar kata terlarang kosong.",
+                }
+            sample = words[:15]
+            more = f" (dan {len(words) - 15} lainnya)" if len(words) > 15 else ""
+            return {
+                "status": "success",
+                "total": len(words),
+                "message": f"Ditemukan {len(words)} kata terlarang: {', '.join(sample)}{more}.",
+            }
+
+        elif tool_name == "list_bans":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh lihat daftar ban.",
+                }
+            now = self._now()
+            bans = sorted(self._temp_bans.values(), key=lambda e: e.get("until", 0))
+            if not bans:
+                return {
+                    "status": "success",
+                    "message": "Tidak ada pengguna yang sedang terkena ban sementara saat ini.",
+                }
+            items = []
+            for entry in bans:
+                who = entry.get("who") or entry.get("label")
+                left = self._fmt_duration(entry.get("until", 0) - now)
+                reason = entry.get("reason") or "tidak ada alasan"
+                items.append(f"{who} (sisa {left}, alasan: {reason})")
+            return {
+                "status": "success",
+                "message": f"Daftar ban sementara: {', '.join(items)}.",
+            }
+
+        elif tool_name == "find_user":
+            nickname = str(tool_args.get("nickname") or "").strip()
+            if not nickname:
+                return {"status": "error", "message": "Nama pengguna harus diisi."}
+            targets = self._find_users_by_nickname_fuzzy(nickname)
+            if not targets:
+                return {
+                    "status": "error",
+                    "error": "USER_NOT_FOUND",
+                    "message": f"User '{nickname}' tidak ditemukan atau sedang tidak online di server.",
+                }
+            infos = []
+            for u in targets:
+                nick = from_tt_char(u.szNickname)
+                cid = u.nChannelID
+                cpath = self.getChannelPath(cid) or "Root"
+                status_msg = from_tt_char(u.szStatusMsg).strip()
+                status_str = f", status: '{status_msg}'" if status_msg else ""
+                infos.append(f"{nick} ada di channel {cpath}{status_str}")
+            return {
+                "status": "success",
+                "message": f"Ditemukan: {'; '.join(infos)}.",
+            }
+
+        elif tool_name == "check_channel_owner":
+            channel_target = str(tool_args.get("channel") or "").strip()
+            cid = self._find_channel_id(channel_target)
+            if not cid:
+                return {
+                    "status": "error",
+                    "error": "CHANNEL_NOT_FOUND",
+                    "message": f"Channel '{channel_target}' tidak ditemukan.",
+                }
+            path = self.getChannelPath(cid) or str(cid)
+            owner = cache_store.get_owner(path)
+            if not owner:
+                return {
+                    "status": "success",
+                    "message": f"Channel {path} tidak memiliki pemilik yang tercatat.",
+                }
+            return {
+                "status": "success",
+                "message": f"Pemilik channel {path} adalah {owner}.",
+            }
+
+        elif tool_name == "get_bot_info":
+            ver = getattr(config, "VERSION", "1.1.2")
+            try:
+                tt_ver = tt5.getVersion() if hasattr(tt5, "getVersion") else "5.x"
+            except Exception:
+                tt_ver = "5.x"
+            return {
+                "status": "success",
+                "message": f"Aku bot TeamTalk untuk membantu teman-teman di server ini. Versi bot {ver}, TeamTalk SDK {tt_ver}. Fitur yang tersedia: moderasi otomatis, deteksi spam, filter kata kasar, manajemen channel, dan bantuan cerdas melalui @ai.",
+            }
+
+        else:
+            return {
+                "status": "error",
+                "error": "UNKNOWN_TOOL",
+                "message": f"Wah kayaknya belum ada deh function '{tool_name}' di bot ini.",
+            }
+
+    def _process_ai_tool_requests(self):
+        """Execute pending AI tool requests on the main thread."""
+        for req in self._ai_chat.drain_tool_requests():
+            try:
+                req.result = self._execute_ai_tool(req.name, req.args, req.context)
+            except Exception as exc:
+                logger.exception("AI tool execution error for %s: %s", req.name, exc)
+                req.result = {"status": "error", "error": "EXECUTION_ERROR", "message": str(exc)}
+            finally:
+                req.event.set()
 
     def _process_ai_results(self):
         """Act on finished AI reviews (runs on the main thread)."""
@@ -2907,6 +3539,7 @@ class BotClient(TeamTalk):
 
     def process_scheduled(self):
         safe_call(self._process_ai_results)
+        safe_call(self._process_ai_tool_requests)
         safe_call(self._process_ai_chat_results)
         try:
             now = self._now()

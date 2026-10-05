@@ -109,7 +109,7 @@ All wizards support `/cancel` to abort. Output is chunked automatically if respo
 
 Optionally, an AI model on Cloudflare Workers AI decides whether an ambiguous badword was meant as an insult ("anjing tetanggaku berisik" is about a dog, "anjing lah" is a curse). Only messages whose matches are all ambiguous are sent, with a few surrounding messages as context (so a lone "anjing" after "aku punya binatang baru" is understood), without names or IPs; if the AI does not answer, the message is not counted. Setup and evaluation: [`docs/ai.md`](docs/ai.md). Switch: `/abt ai`.
 
-Users can also ask the AI in a channel: a message starting with `@ai` gets an answer in that channel, followed by a short "AI can make mistakes" note (`/abt aichat`, `/help ai`).
+Users can also ask the AI in a channel: a message starting with `@ai` gets an answer in that channel, followed by a short "AI can make mistakes" note (`/abt aichat`, `/help ai`). It also supports natural language bot commands via function calling (e.g. `@ai kick orang yang namanya kak fian dong`), with admin permission checks on sensitive actions.
 
 ## Deployment
 
