@@ -103,7 +103,13 @@ AI bisa salah. Periksa kembali info penting.
   whole server; people who hit a limit are told privately.
 - An answer that contains a clear badword is replaced by a short refusal.
 - The question itself is still an ordinary channel message: the badword
-  filter and spam detection apply to it as usual.
+  filter and spam detection apply to it as usual. A question that gets a
+  badword warning is **not answered**. With the context check on
+  (`/abt ai on`), a question with only ambiguous words (`@ai anjing`) is
+  judged by the AI first, which is told it is a question to the assistant:
+  asking about a word is fine and gets an answer, insulting someone in the
+  question is counted and gets none. With the check off such a question is
+  counted and not answered, like any other badword.
 - In classroom channels the server may refuse the bot's answer unless the
   bot is allowed to write there.
 

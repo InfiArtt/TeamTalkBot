@@ -22,8 +22,8 @@ sys.path.insert(0, ROOT)
 import config  # noqa: E402
 from ai_review import AIReviewer, INSULT, OK, OTHER, SAME  # noqa: E402
 
-# (message, flagged word, expected verdict[, earlier messages]); kept apart from
-# the prompt's examples
+# (message, flagged word, expected verdict[, earlier messages[, question to the
+# AI assistant]]); kept apart from the prompt's examples
 CASES = [
     ("anjing", "anjing", OK, [(SAME, "aku baru adopsi binatang, coba tebak apa")]),
     ("anjing", "anjing", OK, [(OTHER, "peliharaan kamu apa?")]),
@@ -63,6 +63,10 @@ CASES = [
     ("mau seks sama aku ga", "seks", INSULT),
     ("gay lu, cupu banget", "gay", INSULT),
     ("you are so gay, loser", "gay", INSULT),
+    ("@ai anjing", "anjing", OK, [], True),
+    ("@ai apa bedanya babi hutan sama babi ternak", "babi", OK, [], True),
+    ("@ai kenapa orang bilang anjing kalau marah", "anjing", OK, [], True),
+    ("@ai budi itu monyet ya", "monyet", INSULT, [], True),
 ]
 
 
@@ -85,13 +89,14 @@ def main() -> None:
     times = []
     for text, word, expected, *rest in CASES:
         before = rest[0] if rest else []
+        to_assistant = bool(rest[1]) if len(rest) > 1 else False
         if before:
             text_label = " / ".join(msg for _who, msg in before) + " -> " + text
         else:
             text_label = text
         start = time.monotonic()
         try:
-            verdict = reviewer.classify(text, [word], before)
+            verdict = reviewer.classify(text, [word], before, (), to_assistant)
         except Exception as exc:
             errors += 1
             print(f"ERROR  {text_label!r}: {exc}")
