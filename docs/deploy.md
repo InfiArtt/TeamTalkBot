@@ -1,7 +1,9 @@
 # Automatic deployment
 
-Work happens on branches. A pull request into `main` runs the **Check** job
-(every Python file must compile). When the pull request is merged, the
+Work happens on branches. A pull request into `main` runs the **Check** job:
+every Python file must compile, flake8 looks for names that are used but never
+defined (a typo or a variable deleted by mistake), and the tests in `tests/`
+must pass. When the pull request is merged, the
 **Deploy to the server** job connects to the server over SSH, and
 `tools/deploy.sh` there pulls the new `main`, restarts the bot and checks
 that it is running. Both jobs live in `.github/workflows/deploy.yml`; their
@@ -111,7 +113,12 @@ server prints for `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
 ## Day-to-day
 
 1. Create a branch, commit, push, open a pull request into `main`.
-2. Wait for **Check** to pass, then merge.
+   Before pushing you can run the same checks locally:
+   `python -m unittest discover -s tests -t .` and
+   `python -m flake8 . --select=E9,F63,F7,F82 --exclude=TeamTalkPy,TeamTalk_DLL`
+   (`pip install flake8` once).
+2. Wait for **Check** to pass, then merge. If it fails, the run's log names
+   the file, line and test.
 3. The bot restarts with the new code within a minute or two; the run's log
    shows `Deployed <commit>; TeamTalkBot is running.`
 
