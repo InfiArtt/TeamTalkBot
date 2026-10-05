@@ -51,6 +51,13 @@ You have tools to perform actions on the TeamTalk server:
 - list_channels: List server channels.
 - find_user: Find where a user is located and their status.
 - check_channel_owner: Check who owns a channel.
+- change_bot_nickname: Change the bot's nickname using SDK doChangeNickname (sensitive, admin only).
+- join_channel: Make the bot join a specific channel using SDK doJoinChannelByID (sensitive, admin only).
+- leave_channel: Make the bot leave the current channel and return to root/lobi (sensitive, admin only).
+- set_channel_operator: Grant or revoke channel operator status ChanOp using SDK doChannelOpEx (sensitive, admin only).
+- get_channel_info: View technical channel details like topic and max users from SDK getChannel.
+- get_user_info: View user profile details from SDK getUser.
+- broadcast_message: Broadcast an announcement to everyone on the server using SDK (sensitive, admin only).
 - get_bot_info: Get info about the bot and its features.
 
 Handling Commands & Actions:
@@ -316,6 +323,110 @@ TOOLS = [
                 },
             },
             "required": ["channel"],
+        },
+    },
+    {
+        "name": "change_bot_nickname",
+        "description": "Change the bot's nickname/display name on the server using SDK doChangeNickname. Sensitive: requires admin privileges.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "nickname": {
+                    "type": "string",
+                    "description": "The new nickname for the bot.",
+                },
+            },
+            "required": ["nickname"],
+        },
+    },
+    {
+        "name": "join_channel",
+        "description": "Make the bot join a specific channel on the server using SDK doJoinChannelByID. Sensitive: requires admin privileges.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "channel": {
+                    "type": "string",
+                    "description": "The target channel name or path.",
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Optional channel password.",
+                },
+            },
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "leave_channel",
+        "description": "Make the bot leave its current channel and return to the root channel using SDK. Sensitive: requires admin privileges.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "set_channel_operator",
+        "description": "Grant or revoke Channel Operator (ChanOp) status for a user in a channel using SDK doChannelOpEx. Sensitive: requires admin privileges.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "nickname": {
+                    "type": "string",
+                    "description": "The nickname of the user.",
+                },
+                "channel": {
+                    "type": "string",
+                    "description": "Optional channel name or path (defaults to user's current channel).",
+                },
+                "is_operator": {
+                    "type": "boolean",
+                    "description": "True to grant operator status, False to revoke operator status.",
+                },
+            },
+            "required": ["nickname", "is_operator"],
+        },
+    },
+    {
+        "name": "get_channel_info",
+        "description": "Get detailed channel information and technical settings from SDK getChannel. Available to everyone.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "channel": {
+                    "type": "string",
+                    "description": "The channel name or path.",
+                },
+            },
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "get_user_info",
+        "description": "Get detailed user info from SDK getUser (account username, channel, status, admin role). Sensitive data like IP only for admins.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "nickname": {
+                    "type": "string",
+                    "description": "The nickname of the user.",
+                },
+            },
+            "required": ["nickname"],
+        },
+    },
+    {
+        "name": "broadcast_message",
+        "description": "Broadcast an announcement message to all users on the server using SDK. Sensitive: requires admin privileges.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The announcement message to broadcast.",
+                },
+            },
+            "required": ["message"],
         },
     },
     {

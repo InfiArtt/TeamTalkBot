@@ -55,5 +55,5 @@ jobs:
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           # The server only lets this key run tools/deploy.sh
           ssh -i ~/.ssh/deploy_key -p "${DEPLOY_PORT:-22}" \
-            -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$DEPLOY_USER@$DEPLOY_HOST"
+            -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=30 \
+            -v "$DEPLOY_USER@$DEPLOY_HOST"

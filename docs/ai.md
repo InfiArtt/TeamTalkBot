@@ -137,6 +137,13 @@ The AI automatically invokes tools executed safely on the bot's main thread:
 - `list_channels`: list server channels (available to everyone).
 - `find_user`: locate a user and see what channel they are in and their status (available to everyone).
 - `check_channel_owner`: check the owner of a channel (available to everyone).
+- `change_bot_nickname`: change the bot's nickname/display name on the server using SDK `doChangeNickname` (sensitive, requires admin).
+- `join_channel`: make the bot join a specific channel using SDK `doJoinChannelByID` (sensitive, requires admin).
+- `leave_channel`: make the bot leave its current channel and return to root using SDK (sensitive, requires admin).
+- `set_channel_operator`: grant or revoke Channel Operator (ChanOp) status for a user using SDK `doChannelOpEx` (sensitive, requires admin).
+- `get_channel_info`: view technical channel settings (topic, max users, password protection) from SDK `getChannel` (available to everyone).
+- `get_user_info`: view user profile details from SDK `getUser` (available to everyone; sensitive fields like IP are admin only).
+- `broadcast_message`: broadcast an announcement message across the server using SDK `TextMsgType.MSGTYPE_BROADCAST` (sensitive, requires admin).
 - `get_bot_info`: get bot version and supported features (available to everyone).
 
 **Admin permissions**: Sensitive actions strictly check the requester's `uUserType & UserType.USERTYPE_ADMIN`. If a non-admin requests a restricted action (like kicking, moving, or disabling moderation), permission is denied and the AI replies in its friendly Gen Z persona (for example: *"Woi kamu bukan admin bro, gak boleh aneh-aneh ya"*).
