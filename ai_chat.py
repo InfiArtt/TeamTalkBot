@@ -764,6 +764,7 @@ class AIChat:
         if isinstance(context, dict):
             extra = []
             req_nick = context.get("nickname") or "Pengguna"
+            chan_name = context.get("channel_name") or f"channel {context.get('channel')}"
             is_pm = bool(context.get("is_pm"))
             if is_pm:
                 extra.append(f"Penanya: {req_nick} (mengirim pertanyaan via Private Message / PM, sedang berada di channel: {chan_name}).")
