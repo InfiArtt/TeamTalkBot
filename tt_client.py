@@ -3282,6 +3282,164 @@ class BotClient(TeamTalk):
                 "message": f"Pemilik channel {path} adalah {owner}.",
             }
 
+        elif tool_name == "change_bot_nickname":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh ganti nama bot.",
+                }
+            nickname = str(tool_args.get("nickname") or "").strip()
+            if not nickname:
+                return {"status": "error", "message": "Nama baru bot tidak boleh kosong."}
+            self.doChangeNickname(nickname)
+            return {
+                "status": "success",
+                "message": f"Nama bot berhasil diubah menjadi: '{nickname}'.",
+            }
+
+        elif tool_name == "join_channel":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh mindahin bot ke channel lain.",
+                }
+            channel_target = str(tool_args.get("channel") or "").strip()
+            password = str(tool_args.get("password") or "").strip()
+            cid = self._find_channel_id(channel_target)
+            if not cid:
+                return {
+                    "status": "error",
+                    "error": "CHANNEL_NOT_FOUND",
+                    "message": f"Channel '{channel_target}' tidak ditemukan di server.",
+                }
+            self.doJoinChannelByID(cid, password)
+            cpath = self.getChannelPath(cid) or channel_target
+            return {
+                "status": "success",
+                "message": f"Bot berhasil bergabung ke channel {cpath}.",
+            }
+
+        elif tool_name == "leave_channel":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh nyuruh bot keluar channel.",
+                }
+            root_id = self.getRootChannelID() if hasattr(self, "getRootChannelID") else 1
+            self.doJoinChannelByID(root_id or 1, "")
+            return {
+                "status": "success",
+                "message": "Bot sudah kembali ke channel utama (root/lobi).",
+            }
+
+        elif tool_name == "set_channel_operator":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh ngatur status operator channel.",
+                }
+            nickname = str(tool_args.get("nickname") or "").strip()
+            channel_target = str(tool_args.get("channel") or "").strip()
+            is_op = bool(tool_args.get("is_operator", True))
+            targets = self._find_users_by_nickname_fuzzy(nickname)
+            if not targets:
+                return {
+                    "status": "error",
+                    "error": "USER_NOT_FOUND",
+                    "message": f"User '{nickname}' tidak ditemukan di server.",
+                }
+            u = targets[0]
+            cid = self._find_channel_id(channel_target) if channel_target else u.nChannelID
+            if not cid:
+                cid = u.nChannelID
+            self.doChannelOpEx(u.nUserID, cid, "", is_op)
+            nick = from_tt_char(u.szNickname)
+            cpath = self.getChannelPath(cid) or f"channel {cid}"
+            status_str = "dijadikan operator" if is_op else "dicabut status operatornya"
+            return {
+                "status": "success",
+                "message": f"User {nick} berhasil {status_str} di {cpath}.",
+            }
+
+        elif tool_name == "get_channel_info":
+            channel_target = str(tool_args.get("channel") or "").strip()
+            cid = self._find_channel_id(channel_target)
+            if not cid:
+                return {
+                    "status": "error",
+                    "error": "CHANNEL_NOT_FOUND",
+                    "message": f"Channel '{channel_target}' tidak ditemukan di server.",
+                }
+            cpath = self.getChannelPath(cid) or channel_target
+            try:
+                ch = self.getChannel(cid)
+                topic = from_tt_char(ch.szTopic).strip() if ch and hasattr(ch, "szTopic") else ""
+                max_u = ch.nMaxUsers if ch and hasattr(ch, "nMaxUsers") else 0
+                has_pass = bool(ch.uChannelType & 1) if ch and hasattr(ch, "uChannelType") else False
+            except Exception:
+                topic, max_u, has_pass = "", 0, False
+            info_parts = [f"Channel: {cpath}"]
+            if topic:
+                info_parts.append(f"Topik: {topic}")
+            if max_u > 0:
+                info_parts.append(f"Kapasitas: {max_u} pengguna")
+            info_parts.append("Dilindungi password" if has_pass else "Tanpa password")
+            return {
+                "status": "success",
+                "message": f"Info {', '.join(info_parts)}.",
+            }
+
+        elif tool_name == "get_user_info":
+            nickname = str(tool_args.get("nickname") or "").strip()
+            targets = self._find_users_by_nickname_fuzzy(nickname)
+            if not targets:
+                return {
+                    "status": "error",
+                    "error": "USER_NOT_FOUND",
+                    "message": f"User '{nickname}' tidak ditemukan di server.",
+                }
+            u = targets[0]
+            nick = from_tt_char(u.szNickname)
+            uname = from_tt_char(u.szUsername)
+            ip = from_tt_char(u.szIPAddress)
+            cpath = self.getChannelPath(u.nChannelID) or "Root"
+            status_msg = from_tt_char(u.szStatusMsg).strip()
+            u_is_admin = bool(u.uUserType & UserType.USERTYPE_ADMIN) if hasattr(u, "uUserType") else False
+            role = "Admin" if u_is_admin else "User biasa"
+            details = [f"Nama: {nick}", f"Role: {role}", f"Di channel: {cpath}"]
+            if status_msg:
+                details.append(f"Status: '{status_msg}'")
+            if is_admin:
+                details.append(f"Username: '{uname}'")
+                details.append(f"IP: {ip}")
+            return {
+                "status": "success",
+                "message": f"Data pengguna: {', '.join(details)}.",
+            }
+
+        elif tool_name == "broadcast_message":
+            if not is_admin:
+                return {
+                    "status": "error",
+                    "error": "PERMISSION_DENIED",
+                    "message": "Kamu bukan admin, jadi gak boleh kirim broadcast.",
+                }
+            msg = str(tool_args.get("message") or "").strip()
+            if not msg:
+                return {"status": "error", "message": "Pesan broadcast tidak boleh kosong."}
+            my_id = self.getMyUserID() or 0
+            parts = buildTextMessage(content=msg, nMsgType=TextMsgType.MSGTYPE_BROADCAST, nFromUserID=my_id)
+            for part in parts:
+                self.doTextMessage(part)
+            return {
+                "status": "success",
+                "message": f"Pesan siaran berhasil dikirim ke seluruh server: '{msg}'.",
+            }
+
         elif tool_name == "get_bot_info":
             ver = getattr(config, "VERSION", "1.1.2")
             try:
