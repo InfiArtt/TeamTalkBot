@@ -2563,7 +2563,40 @@ class BotClient(TeamTalk):
             return None
         return rest.lstrip(" :,\t\n").strip()
 
+    def _is_ai_chat_blocked_user(self, userid: int) -> bool:
+        """Whether this user's account is blocked from using @ai in channels."""
+        username = (self._get_username(userid) or "").strip().lower()
+        blocked = {
+            str(u).strip().lower()
+            for u in getattr(config, "AI_CHAT_BLOCKED_USERS", ["tamu", "hadirin"]) or []
+            if str(u).strip()
+        }
+        if username and username in blocked:
+            return True
+        if not username:
+            try:
+                user = self.getUser(userid)
+                nick = from_tt_char(user.szNickname).strip().lower() if user is not None else ""
+                if nick in blocked:
+                    return True
+            except Exception:
+                pass
+        return False
+
     def _handle_ai_question(self, userid: int, channel_id: int, question: str):
+        if self._is_ai_chat_blocked_user(userid):
+            msg = getattr(
+                config,
+                "AI_CHAT_BLOCKED_MESSAGE",
+                "Fitur @ai tidak tersedia untuk akun tamu atau hadirin.",
+            )
+            safe_call(self.send_pm, userid, msg)
+            logger.info(
+                "AI chat refused: user %s (%s) is blocked from using AI chat",
+                userid,
+                self._get_username(userid),
+            )
+            return
         if not question:
             prefix = str(getattr(config, "AI_CHAT_PREFIX", "@ai") or "@ai").strip()
             self._send_channel_text(

@@ -101,6 +101,8 @@ AI bisa salah. Periksa kembali info penting.
 - Limits: one question per person every `AI_CHAT_COOLDOWN_SEC` (default 20)
   seconds and `AI_CHAT_DAILY_LIMIT` (default 200) questions per day for the
   whole server; people who hit a limit are told privately.
+- Guest accounts (`AI_CHAT_BLOCKED_USERS`, default `tamu`, `hadirin`) cannot
+  use `@ai`; people on those accounts are told privately.
 - An answer that contains a clear badword is replaced by a short refusal.
 - The question itself is still an ordinary channel message: the badword
   filter and spam detection apply to it as usual. A question that gets a
@@ -115,6 +117,8 @@ AI bisa salah. Periksa kembali info penting.
 
 Setup: the same Cloudflare keys as above, then `/abt aichat on` (off by
 default). Other settings: `AI_CHAT_PREFIX` (default `@ai`), `AI_CHAT_MODEL`
-(empty: same as `AI_MODEL`), `AI_CHAT_MAX_TOKENS` (default 300) and
-`AI_CHAT_DISCLAIMER` (the line after every answer; empty to leave it out).
+(empty: same as `AI_MODEL`), `AI_CHAT_MAX_TOKENS` (default 300),
+`AI_CHAT_BLOCKED_USERS` (default `["tamu", "hadirin"]`),
+`AI_CHAT_BLOCKED_MESSAGE` and `AI_CHAT_DISCLAIMER` (the line after every
+answer; empty to leave it out).
 Users can read `/help ai`.
