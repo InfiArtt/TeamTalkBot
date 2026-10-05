@@ -182,6 +182,18 @@ HELP_TOPICS = {
         "  /bwd 3-5\n"
         "  /bwd anjing,babi\n",
     ),
+    "ai": (
+        "Ask the AI",
+        "In a channel, start a message with @ai followed by your question. The AI answers in "
+        "the same channel, so everyone there hears it. It remembers the last few questions in "
+        "that channel, so you can ask follow-up questions. The AI can make mistakes: check "
+        "important information.\n"
+        "Only works when the admins have switched it on (/abt aichat). There is a short wait "
+        "between your questions and a daily limit for the server.\n"
+        "Example:\n"
+        "  @ai apa itu fotosintesis?\n"
+        "  @ai jelasin lebih simpel\n",
+    ),
     "ab": (
         "Auto-moderation Menu (Admin)",
         "Manage the automatic warnings, kicks and temp bans step by step: the bot offers\n"
@@ -201,6 +213,7 @@ HELP_TOPICS = {
         "  5 profile  badword check of nicknames and status\n"
         "  6 pm       checking private messages between users\n"
         "  7 ai       let an AI decide whether an ambiguous badword (anjing, babi, tahi...) was an insult\n"
+        "  8 aichat   answer channel messages that start with @ai (see /help ai)\n"
         "Defaults come from config.json; a switch changed here is remembered across restarts. "
         "Switching a feature off also clears its current warnings and cancels kicks/bans that "
         "were about to happen.\n"
@@ -306,6 +319,7 @@ def get_general_help() -> str:
         "/oc   Check channel owner (see /help oc)",
         "/bw   Badword menu (admin) | /bwl list | /bwa add | /bwd delete | /bwt test",
         "/v    Show bot version, runtime OS, and TeamTalk SDK info",
+        "@ai   In a channel: ask the AI, it answers in that channel (see /help ai)",
         "",
         "Admin Commands:",
         "/dc, /du           Delete channel/user (see /help dc, /help du)",

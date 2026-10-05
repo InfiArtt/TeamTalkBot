@@ -12,8 +12,10 @@ from help_texts import get_topic_help
 from badwords import BadWordsFilter
 from abuse_tracker import AbuseTracker
 from abuse_whitelist import AbuseWhitelist
+from ai_chat import AIChat
 from ai_review import AIReviewer, INSULT, OK, OTHER, SAME
 from collections import deque
+import datetime
 import abuse_menu
 import badword_menu
 import feature_toggles
@@ -202,6 +204,18 @@ class BotClient(TeamTalk):
         self._message_seq = 0
         # (conversation, seq) of the message being handled right now
         self._current_message: Optional[Tuple[tuple, int]] = None
+        # "@ai <question>" in a channel (see /abt aichat)
+        self._ai_chat = AIChat(
+            getattr(config, "AI_CLOUDFLARE_ACCOUNT_ID", ""),
+            getattr(config, "AI_CLOUDFLARE_API_TOKEN", ""),
+            getattr(config, "AI_CHAT_MODEL", "") or getattr(config, "AI_MODEL", ""),
+            max(30.0, float(getattr(config, "AI_TIMEOUT_SEC", 10) or 10)),
+            int(getattr(config, "AI_CHAT_MAX_TOKENS", 300) or 300),
+        )
+        self._ai_chat_last: Dict[int, float] = {}  # user id -> last question time
+        self._ai_chat_history: Dict[int, deque] = {}  # channel id -> (time, question, answer)
+        self._ai_chat_day = ""
+        self._ai_chat_count = 0
         # Init badwords and abuse tracker
         self._badwords = BadWordsFilter()
         try:
@@ -389,7 +403,10 @@ class BotClient(TeamTalk):
         ("profile", "Badword check of nicknames and status", "BADWORDS_PROFILE_CHECK_ENABLED"),
         ("pm", "Check private messages between users", None),
         ("ai", "AI decides on ambiguous badwords (e.g. anjing as a dog)", "AI_ENABLED"),
+        ("aichat", "AI answers channel messages that start with @ai", "AI_CHAT_ENABLED"),
     )
+    # Switches that need the Cloudflare credentials in config.json
+    _AI_FEATURES = ("ai", "aichat")
     _DEFAULT_BW_TYPES = ["PRIVATE", "CHANNEL", "BROADCAST"]
 
     def _config_types(self, key: str, default: List[str]) -> set:
@@ -946,6 +963,14 @@ class BotClient(TeamTalk):
                         "BROADCAST" in spam_types
                     ):
                         self._handle_abuse_message(from_uid, self._get_user_ip(from_uid))
+                if textmessage.nMsgType == TextMsgType.MSGTYPE_CHANNEL:
+                    question = self._ai_chat_question(message_text)
+                    if (
+                        question is not None
+                        and self._ai_chat_active()
+                        and from_uid != (self.getMyUserID() or 0)
+                    ):
+                        self._handle_ai_question(from_uid, int(textmessage.nChannelID), question)
                 return
             from_user = textmessage.nFromUserID
             content = message_text.strip()
@@ -2482,6 +2507,111 @@ class BotClient(TeamTalk):
         else:
             logger.warning("AI review queue full; not counted (user=%s, words=%s)", userid, entries)
 
+    # ============ "@ai <question>" in a channel ============
+    _AI_CHAT_HISTORY_SEC = 600.0  # earlier questions older than this are forgotten
+    _AI_CHAT_REFUSAL = "Maaf, aku tidak bisa menjawab itu."
+
+    def _ai_chat_active(self) -> bool:
+        return self._feature_on("aichat") and self._ai_chat.configured
+
+    def _ai_chat_question(self, text: str) -> Optional[str]:
+        """The question if ``text`` starts with the @ai prefix, else None.
+
+        The prefix must be followed by a space, ':' or ',' (or nothing), so
+        "@aisyah halo" is not a question for the AI.
+        """
+        prefix = str(getattr(config, "AI_CHAT_PREFIX", "@ai") or "@ai").strip().lower()
+        stripped = (text or "").strip()
+        if not stripped.lower().startswith(prefix):
+            return None
+        rest = stripped[len(prefix):]
+        if rest and rest[0] not in " :,\t\n":
+            return None
+        return rest.lstrip(" :,\t\n").strip()
+
+    def _handle_ai_question(self, userid: int, channel_id: int, question: str):
+        if not question:
+            prefix = str(getattr(config, "AI_CHAT_PREFIX", "@ai") or "@ai").strip()
+            self._send_channel_text(
+                channel_id, f"Tulis pertanyaan setelah {prefix}, contoh: {prefix} apa itu fotosintesis?"
+            )
+            return
+        now = self._now()
+        cooldown = float(getattr(config, "AI_CHAT_COOLDOWN_SEC", 20) or 0)
+        waited = now - self._ai_chat_last.get(userid, 0.0)
+        if waited < cooldown:
+            # Told privately, so the channel is not filled with notices
+            safe_call(
+                self.send_pm,
+                userid,
+                f"Tunggu {int(cooldown - waited) + 1} detik lagi sebelum bertanya ke AI.",
+            )
+            return
+        today = datetime.date.fromtimestamp(now).isoformat()
+        if today != self._ai_chat_day:
+            self._ai_chat_day, self._ai_chat_count = today, 0
+        if self._ai_chat_count >= int(getattr(config, "AI_CHAT_DAILY_LIMIT", 200) or 0):
+            safe_call(self.send_pm, userid, "Batas pertanyaan ke AI untuk hari ini sudah habis.")
+            return
+        history = [
+            (q, a)
+            for ts, q, a in self._ai_chat_history.get(channel_id, ())
+            if now - ts <= self._AI_CHAT_HISTORY_SEC
+        ]
+        user = safe_call(self.getUser, userid)
+        nickname = from_tt_char(user.szNickname).strip() if user is not None else ""
+        context = {"userid": userid, "channel": channel_id, "nickname": nickname, "question": question}
+        if not self._ai_chat.ask(question, history, context):
+            safe_call(self.send_pm, userid, "AI sedang sibuk, coba lagi sebentar lagi.")
+            return
+        self._ai_chat_last[userid] = now
+        self._ai_chat_count += 1
+        logger.info(
+            "AI chat question (user=%s, channel=%s, %s chars, %s earlier turns)",
+            userid,
+            channel_id,
+            len(question),
+            len(history),
+        )
+
+    def _process_ai_chat_results(self):
+        """Post finished AI answers in the channel they were asked in."""
+        for context, answer in self._ai_chat.drain():
+            channel_id = context["channel"]
+            if answer is None:
+                text = "Maaf, AI tidak bisa menjawab sekarang. Coba lagi nanti."
+            else:
+                # Safety net: no clear badwords from the AI (ambiguous ones like
+                # "anjing" in an answer about dogs are fine)
+                ambiguous = self._ambiguous_words()
+                if any(e not in ambiguous for e in self._badwords.matching_entries(answer)):
+                    logger.warning("AI chat answer contained a badword; replaced (channel=%s)", channel_id)
+                    answer = self._AI_CHAT_REFUSAL
+                size = max(0, int(getattr(config, "AI_CHAT_HISTORY", 3) or 0))
+                history = self._ai_chat_history.setdefault(channel_id, deque(maxlen=max(1, size)))
+                if size:
+                    history.append((self._now(), context["question"], answer))
+                who = f" untuk {context['nickname']}" if context.get("nickname") else ""
+                disclaimer = str(getattr(config, "AI_CHAT_DISCLAIMER", "") or "").strip()
+                text = f"[AI]{who}: {answer}"
+                if disclaimer:
+                    text += f"\n{disclaimer}"
+            self._send_channel_text(channel_id, text)
+
+    def _send_channel_text(self, channel_id: int, text: str):
+        """Post a channel message; as an admin the bot need not be in the channel."""
+        try:
+            my_id = self.getMyUserID() or 0
+            for part in buildTextMessage(
+                text, TextMsgType.MSGTYPE_CHANNEL, nChannelID=channel_id, nFromUserID=my_id
+            ):
+                cmdid = self.doTextMessage(part)
+                self._track_pending_cmd(
+                    cmdid, 0, f"message to channel {channel_id}", notify=False
+                )
+        except Exception:
+            logger.exception("Failed to send a message to channel %s", channel_id)
+
     def _process_ai_results(self):
         """Act on finished AI reviews (runs on the main thread)."""
         for context, verdict in self._ai.drain():
@@ -2708,6 +2838,7 @@ class BotClient(TeamTalk):
 
     def process_scheduled(self):
         safe_call(self._process_ai_results)
+        safe_call(self._process_ai_chat_results)
         try:
             now = self._now()
             while self._scheduled and self._scheduled[0][0] <= now:
@@ -2836,8 +2967,9 @@ class BotClient(TeamTalk):
                 spam_types = self._spam_types()
                 types.update(spam_types)
                 
-            # Subscribe to additional types only if configured and feature enabled
-            if "CHANNEL" in types:
+            # Subscribe to additional types only if configured and feature enabled.
+            # @ai questions arrive as channel messages from any channel.
+            if "CHANNEL" in types or self._ai_chat_active():
                 subs |= Subscription.SUBSCRIBE_CHANNEL_MSG
                 subs |= Subscription.SUBSCRIBE_INTERCEPT_CHANNEL_MSG
             if "BROADCAST" in types:
@@ -3807,7 +3939,7 @@ class BotClient(TeamTalk):
                     cleared += 1
             if cleared:
                 notes.append(f"Cleared {cleared} pending warning record(s).")
-        if name in ("spam", "badwords", "pm"):
+        if name in ("spam", "badwords", "pm", "aichat"):
             # Which messages the bot intercepts depends on these switches
             safe_call(self._subscribe_text_from_all)
         if name == "ai" and not enabled:
@@ -3829,7 +3961,7 @@ class BotClient(TeamTalk):
             lines = []
             for number, name in enumerate(names, start=1):
                 line = f"{number}. {name} - {descriptions[name]}: {'ON' if self._feature_on(name) else 'OFF'}"
-                if name == "ai" and not self._ai.configured:
+                if name in self._AI_FEATURES and not self._ai.configured:
                     line += " (not configured in config.json)"
                 elif name in self._feature_overrides:
                     line += f" (config.json: {'ON' if self._feature_default(name) else 'OFF'})"
@@ -3864,7 +3996,7 @@ class BotClient(TeamTalk):
                 requester_id, f"{descriptions[name]} is already {'ON' if enabled else 'OFF'}."
             )
             return
-        if name == "ai" and enabled and not self._ai.configured:
+        if name in self._AI_FEATURES and enabled and not self._ai.configured:
             # Switched on without credentials, every ambiguous word would go uncounted
             self.send_pm(
                 requester_id,

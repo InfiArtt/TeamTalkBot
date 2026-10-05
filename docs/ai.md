@@ -74,3 +74,41 @@ messages are included, so mention the check in the server rules.
 
 Switch it off again any time with `/abt ai off`; ambiguous words are then
 counted immediately, as before.
+
+## Ask the AI in a channel (@ai)
+
+Anyone can start a channel message with `@ai` followed by a question:
+
+```
+@ai apa itu fotosintesis?
+```
+
+The bot answers **in that channel** (as an admin it does not need to join
+it), so everyone there hears the answer:
+
+```
+[AI] untuk Siti: Fotosintesis adalah ... 
+AI bisa salah. Periksa kembali info penting.
+```
+
+- Answers are short plain text in the language of the question, with no
+  Markdown or emoji, because screen readers read symbols aloud.
+- The AI remembers the last `AI_CHAT_HISTORY` (default 3) questions and
+  answers of that channel from the last 10 minutes, so follow-ups such as
+  `@ai jelasin lebih simpel` work. Nicknames are not sent to the AI.
+- `@ai` must be followed by a space, `:` or `,`: `@aisyah halo` is not a
+  question. Private messages starting with `@ai` are not answered.
+- Limits: one question per person every `AI_CHAT_COOLDOWN_SEC` (default 20)
+  seconds and `AI_CHAT_DAILY_LIMIT` (default 200) questions per day for the
+  whole server; people who hit a limit are told privately.
+- An answer that contains a clear badword is replaced by a short refusal.
+- The question itself is still an ordinary channel message: the badword
+  filter and spam detection apply to it as usual.
+- In classroom channels the server may refuse the bot's answer unless the
+  bot is allowed to write there.
+
+Setup: the same Cloudflare keys as above, then `/abt aichat on` (off by
+default). Other settings: `AI_CHAT_PREFIX` (default `@ai`), `AI_CHAT_MODEL`
+(empty: same as `AI_MODEL`), `AI_CHAT_MAX_TOKENS` (default 300) and
+`AI_CHAT_DISCLAIMER` (the line after every answer; empty to leave it out).
+Users can read `/help ai`.

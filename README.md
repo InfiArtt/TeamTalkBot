@@ -66,7 +66,7 @@ All settings live in `config.json`. Highlights:
 | **Channel Rules** | `CHANNEL_CREATION_MAX_PER_USER`, limit/block messages, `CHANNEL_CREATION_BLOCKED_USERNAMES` |
 | **Registration** | `REGISTRATION_ALLOWED_USERNAMES`, per-IP limits/messages |
 | **Shared accounts** | `SHARED_ACCOUNTS` – accounts many people log in with (default `tamu`, `murid`, `hadirin`, `osis`, `pemateri`, `f.osis`, `guest`): not deletable via the bot, moderation tells their users apart by nickname + IP, and unless they are admin accounts they cannot create, delete or transfer channels via the bot |
-| **AI context check** | `AI_ENABLED`, `AI_CLOUDFLARE_ACCOUNT_ID`, `AI_CLOUDFLARE_API_TOKEN`, `AI_MODEL`, `AI_TIMEOUT_SEC`, `AI_CONTEXT_MESSAGES`, `AI_AMBIGUOUS_WORDS` (see [`docs/ai.md`](docs/ai.md)) |
+| **AI context check** | `AI_ENABLED`, `AI_CLOUDFLARE_ACCOUNT_ID`, `AI_CLOUDFLARE_API_TOKEN`, `AI_MODEL`, `AI_TIMEOUT_SEC`, `AI_CONTEXT_MESSAGES`, `AI_AMBIGUOUS_WORDS`, `AI_CHAT_ENABLED`, `AI_CHAT_PREFIX`, `AI_CHAT_MODEL`, `AI_CHAT_MAX_TOKENS`, `AI_CHAT_COOLDOWN_SEC`, `AI_CHAT_DAILY_LIMIT`, `AI_CHAT_HISTORY`, `AI_CHAT_DISCLAIMER` (see [`docs/ai.md`](docs/ai.md)) |
 | **Abuse Throttling** | `ABUSE_LOGIN_ENABLED`, `ABUSE_JOIN_ENABLED`, `ABUSE_LOGIN_COUNT`, `ABUSE_JOIN_COUNT`, `BADWORD_ABUSE_COUNT`, `ABUSE_WINDOW_SEC`, `ABUSE_TEMP_BAN_MINUTES`, `BAN_TARGET`, `ABUSE_WHITELIST_FILE`, warning message arrays |
 | **Message Anti-Spam** | `ANTISPAM_MESSAGE_ENABLED`, `ANTISPAM_MESSAGE_COUNT`, `ANTISPAM_MESSAGE_WINDOW_SEC`, `ANTISPAM_INTERCEPT_TYPES`, `ANTISPAM_IGNORE_ADMINS`, warning message arrays |
 | **Badwords** | `BADWORDS_ENABLED`, `BADWORDS_INTERCEPT_TYPES` (`"PRIVATE"`, `"CHANNEL"`, `"BROADCAST"`), `BADWORDS_FILE`, `BADWORDS_IGNORE_ADMINS`, `BADWORDS_PROFILE_CHECK_ENABLED` |
@@ -108,6 +108,8 @@ All wizards support `/cancel` to abort. Output is chunked automatically if respo
 ## AI context check
 
 Optionally, an AI model on Cloudflare Workers AI decides whether an ambiguous badword was meant as an insult ("anjing tetanggaku berisik" is about a dog, "anjing lah" is a curse). Only messages whose matches are all ambiguous are sent, with a few surrounding messages as context (so a lone "anjing" after "aku punya binatang baru" is understood), without names or IPs; if the AI does not answer, the message is not counted. Setup and evaluation: [`docs/ai.md`](docs/ai.md). Switch: `/abt ai`.
+
+Users can also ask the AI in a channel: a message starting with `@ai` gets an answer in that channel, followed by a short "AI can make mistakes" note (`/abt aichat`, `/help ai`).
 
 ## Deployment
 
