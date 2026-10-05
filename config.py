@@ -142,6 +142,9 @@ AI_CHAT_COOLDOWN_SEC: int = 20  # per person
 AI_CHAT_DAILY_LIMIT: int = 200  # questions per day for the whole server
 AI_CHAT_HISTORY: int = 3  # earlier questions/answers of the channel the AI remembers
 AI_CHAT_DISCLAIMER: str = "AI bisa salah. Periksa kembali info penting."
+# User accounts not permitted to use "@ai <question>" in channels
+AI_CHAT_BLOCKED_USERS: List[str] = ["tamu", "hadirin"]
+AI_CHAT_BLOCKED_MESSAGE: str = "Fitur @ai tidak tersedia untuk akun tamu atau hadirin."
 # Badword entries with an ordinary meaning too; when every match in a message
 # is one of these, the AI decides whether it was an insult
 AI_AMBIGUOUS_WORDS: List[str] = [
@@ -236,6 +239,8 @@ DEFAULTS: Dict[str, Any] = {
     "AI_CHAT_DAILY_LIMIT": AI_CHAT_DAILY_LIMIT,
     "AI_CHAT_HISTORY": AI_CHAT_HISTORY,
     "AI_CHAT_DISCLAIMER": AI_CHAT_DISCLAIMER,
+    "AI_CHAT_BLOCKED_USERS": AI_CHAT_BLOCKED_USERS,
+    "AI_CHAT_BLOCKED_MESSAGE": AI_CHAT_BLOCKED_MESSAGE,
     "AI_AMBIGUOUS_WORDS": AI_AMBIGUOUS_WORDS,
     "ANTISPAM_MESSAGE_ENABLED": ANTISPAM_MESSAGE_ENABLED,
     "ANTISPAM_MESSAGE_COUNT": ANTISPAM_MESSAGE_COUNT,

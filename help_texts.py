@@ -190,7 +190,8 @@ HELP_TOPICS = {
         "important information.\n"
         "Only works when the admins have switched it on (/abt aichat). There is a short wait "
         "between your questions and a daily limit for the server. A question with a badword "
-        "gets the usual warning and is not answered.\n"
+        "gets the usual warning and is not answered. Not available on guest accounts (e.g. "
+        "tamu, hadirin).\n"
         "Example:\n"
         "  @ai apa itu fotosintesis?\n"
         "  @ai jelasin lebih simpel\n",
