@@ -150,6 +150,12 @@ The AI automatically invokes tools executed safely on the bot's main thread:
 
 **Unrecognized or unsupported commands**: If a user asks the AI to perform a task or action that does not have a corresponding function in the bot (for example: playing songs, ordering food, restarting servers), the AI does not hallucinate or guess; it politely informs the user in its Gen Z persona that the function is not yet available (for example: *"Wah kayaknya belum ada deh function buat itu di bot ini"*).
 
+**Live Server Context & Fuzzy Lookups**:
+- **Server snapshot injection**: When answering `@ai`, the bot injects real-time context into the AI's prompt: requester nickname, requester's current channel, online users and their channels, and the server channel list.
+- **Self-referential requests**: Requests mentioning "aku", "saya", or omitted nicknames (e.g. `@ai jadiin aku operator channel dong` or `@ai move aku ke channel ekskul dong`) automatically resolve to the requester and their current channel.
+- **Fuzzy user lookups**: The bot strips common Indonesian honorifics (`kak`, `bang`, `mas`, `pak`, `bu`, `@`, `bro`) and matches by exact name, stem, tokens (e.g. `kak fian` matches `Kak Fian (Ketua)` or `Fian`), or username.
+- **Fuzzy channel lookups**: Strips conversational prepositions and channel terms (e.g. `ke channel ekskul` or `ruang ekskul` cleanly matches `Ekskul Robotik` or `/Root/Ekskul Robotik`). Channel terms like `sini` or `channel ini` resolve to the requester's current channel.
+
 Setup: the same Cloudflare keys as above, then `/abt aichat on` (off by
 default). Other settings: `AI_CHAT_PREFIX` (default `@ai`), `AI_CHAT_MODEL`
 (empty: same as `AI_MODEL`), `AI_CHAT_MAX_TOKENS` (default 300),
@@ -157,4 +163,5 @@ default). Other settings: `AI_CHAT_PREFIX` (default `@ai`), `AI_CHAT_MODEL`
 `AI_CHAT_BLOCKED_MESSAGE` and `AI_CHAT_DISCLAIMER` (the line after every
 answer; empty to leave it out).
 Users can read `/help ai`.
+
 

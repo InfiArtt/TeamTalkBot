@@ -63,6 +63,8 @@ You have tools to perform actions on the TeamTalk server:
 Handling Commands & Actions:
 1. When a user asks you to perform an action or command:
    - If there is a matching tool in your tools list, ALWAYS invoke that tool.
+   - Perhatikan Informasi Server Terkini: Jika pengguna meminta tindakan untuk dirinya sendiri (seperti: "jadikan aku operator channel", "move aku ke channel X"), gunakan nama penanya dan channel tempat penanya berada.
+   - Jika pengguna meminta memindahkan pengguna atau join ke channel (seperti: "move kak fian ke channel ekskul"), cari dan gunakan nama channel yang paling cocok dari daftar channel server terkini.
    - If the user asks you to perform an action or command that is NOT available in your tools list (contoh: memutar musik, memesan makanan, restart server atau komputer, atau perintah apapun yang tidak ada di daftar fungsi), JANGAN mengarang atau berpura-pura melaksanakannya. Katakan secara ramah dan santai khas Gen Z bahwa fungsinya belum ada (contoh: "Wah kayaknya belum ada deh function buat itu di bot ini", atau "Fitur itu belum tersedia nih").
 2. If a sensitive function returns PERMISSION_DENIED because the requester is not an admin, firmly and casually refuse in your Gen Z vibe (for example: "Woi kamu bukan admin bro, gak boleh aneh-aneh ya").
 3. If an action succeeds, confirm it casually in plain text without Markdown or emojis."""
@@ -373,7 +375,7 @@ TOOLS = [
             "properties": {
                 "nickname": {
                     "type": "string",
-                    "description": "The nickname of the user.",
+                    "description": "The nickname of the user (or 'aku' to set requester).",
                 },
                 "channel": {
                     "type": "string",
@@ -381,10 +383,10 @@ TOOLS = [
                 },
                 "is_operator": {
                     "type": "boolean",
-                    "description": "True to grant operator status, False to revoke operator status.",
+                    "description": "True to grant operator status (default True), False to revoke operator status.",
                 },
             },
-            "required": ["nickname", "is_operator"],
+            "required": ["nickname"],
         },
     },
     {
@@ -594,7 +596,20 @@ class AIChat:
 
     def answer(self, question: str, history: List[Tuple[str, str]], context: Any = None) -> str:
         """Ask the model and return its cleaned answer; handles function calls."""
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        system_content = SYSTEM_PROMPT
+        if isinstance(context, dict):
+            extra = []
+            req_nick = context.get("nickname") or "Pengguna"
+            chan_name = context.get("channel_name") or f"channel {context.get('channel')}"
+            extra.append(f"Penanya: {req_nick} (berada di channel: {chan_name}).")
+            if context.get("online_users"):
+                extra.append(f"Pengguna online: {', '.join(context['online_users'][:30])}.")
+            if context.get("channels"):
+                extra.append(f"Daftar channel server: {', '.join(context['channels'][:30])}.")
+            if extra:
+                system_content += "\n\nInformasi Server Terkini:\n" + "\n".join(extra)
+
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
         for earlier_question, earlier_answer in history:
             messages.append({"role": "user", "content": earlier_question})
             messages.append({"role": "assistant", "content": earlier_answer})
