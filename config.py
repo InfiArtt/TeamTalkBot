@@ -116,7 +116,7 @@ ABUSE_JOIN_WARNINGS: List[str] = [
     "Third warning: you will be temporarily banned for {duration} minutes due to channel join spam.",
 ]
 BADWORDS_ENABLED: bool = True
-BADWORDS_INTERCEPT_TYPES: List[str] = ["CHANNEL"]
+BADWORDS_INTERCEPT_TYPES: List[str] = ["CHANNEL", "PRIVATE"]
 BADWORDS_FILE: str = "badwords/words.txt"
 BADWORDS_IGNORE_ADMINS: bool = False
 BADWORDS_PROFILE_CHECK_ENABLED: bool = True

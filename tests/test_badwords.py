@@ -78,6 +78,16 @@ class ShippedListTest(unittest.TestCase):
             with self.subTest(entry=entry):
                 self.assertEqual(checker.pattern_error(entry), "")
 
+    def test_shipped_list_matches_toxic_phrases(self):
+        filter_ = BadWordsFilter()
+        filter_.load_file(os.path.join(ROOT, "badwords", DEFAULT_LIST_NAME))
+        self.assertTrue(filter_.contains("apa lu bangsat"))
+        matches = filter_.matching_entries("apa lu bangsat")
+        self.assertTrue(any("bangsat" in m or "bangs" in m for m in matches))
+        self.assertTrue(filter_.contains("APA LU BANGSAT!"))
+        self.assertTrue(filter_.contains("@ai apa lu bangsat"))
+
+
 
 if __name__ == "__main__":
     unittest.main()
