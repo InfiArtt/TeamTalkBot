@@ -19,7 +19,7 @@ def check_text_badwords(client, textmessage, content=None):
             content = from_tt_char(textmessage.szMessage)
         if not content:
             return
-        if getattr(config, "BADWORDS_IGNORE_ADMINS", True):
+        if getattr(config, "BADWORDS_IGNORE_ADMINS", False):
             try:
                 u = client.getUser(from_uid)
                 if u.uUserType & UserType.USERTYPE_ADMIN:
@@ -39,7 +39,7 @@ def check_user_profile_badwords(client, user):
     try:
         if user.nUserID == (client.getMyUserID() or 0):
             return
-        if getattr(config, "BADWORDS_IGNORE_ADMINS", True) and (
+        if getattr(config, "BADWORDS_IGNORE_ADMINS", False) and (
             user.uUserType & UserType.USERTYPE_ADMIN
         ):
             return
